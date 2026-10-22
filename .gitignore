@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.flac
+*.mp3
+*.lrc
+*.ttml
+build/
+dist/
