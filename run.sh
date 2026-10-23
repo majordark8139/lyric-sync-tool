@@ -10,5 +10,15 @@ if [ ! -f "${VENV_PYTHON}" ]; then
     exit 1
 fi
 
+# Export LD_LIBRARY_PATH with local bundling and venv support
+export LD_LIBRARY_PATH="${SCRIPT_DIR}/lib:${SCRIPT_DIR}/.venv/lib:${LD_LIBRARY_PATH:-}"
+
+# Export QT_QPA_PLATFORMTHEME with clean fallback
+if [ -z "${QT_QPA_PLATFORMTHEME:-}" ]; then
+    export QT_QPA_PLATFORMTHEME="gtk3"
+fi
+
+# Ensure project root is in PYTHONPATH
 export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}"
+
 exec "${VENV_PYTHON}" "${SCRIPT_DIR}/gui/app.py" "$@"
