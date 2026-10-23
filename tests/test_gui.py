@@ -133,6 +133,21 @@ class TestKaraokePreviewWidget(unittest.TestCase):
         self.widget.toggle_play()
         self.assertFalse(self.widget._is_playing)
 
+    def test_load_track(self) -> None:
+        lyrics = _make_sample_lyrics()
+        self.widget.load_track("/path/to/song.mp3", lyrics)
+        self.assertEqual(self.widget._audio_path, "/path/to/song.mp3")
+        self.assertIsNotNone(self.widget._lyrics)
+        self.assertFalse(self.widget._is_playing)
+
+    def test_paint_canvas_does_not_crash(self) -> None:
+        lyrics = _make_sample_lyrics()
+        self.widget.set_lyrics(lyrics, total_duration_ms=5000)
+        self.widget.seek(1500)
+        from PySide6.QtGui import QPixmap
+        pm = QPixmap(400, 300)
+        self.widget.canvas.render(pm)
+
 
 class TestLyricsEditorWidget(unittest.TestCase):
     def setUp(self) -> None:

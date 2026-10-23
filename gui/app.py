@@ -339,7 +339,7 @@ class MainWindow(QMainWindow):
         if track.matched_lyrics is None:
             track.matched_lyrics = load_lyrics_for_file(track.file_path)
 
-        self.preview_widget.set_lyrics(track.matched_lyrics, track.duration_ms)
+        self.preview_widget.load_track(track.file_path, track.matched_lyrics)
         self.editor_widget.set_lyrics(track.matched_lyrics)
 
     def _on_editor_lyrics_changed(self, updated_lyrics: SongLyrics) -> None:

@@ -25,14 +25,15 @@ class TaggingSettingsDialog(QDialog):
     def __init__(self, current_config: TaggingConfig, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Tagging & Synchronization Settings")
-        self.resize(460, 520)
+        self.resize(460, 540)
+        self.setMinimumHeight(540)
         self._config = current_config
         self._init_ui()
         self._load_config(self._config)
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(12, 12, 12, 16)
         layout.setSpacing(8)
 
         # ── 1. Sidecars Group ──
@@ -66,7 +67,7 @@ class TaggingSettingsDialog(QDialog):
         layout.addWidget(sidecar_group)
 
         # ── 2. Cleanup & Overwrite Group ──
-        cleanup_group = QGroupBox("Cleanup & Overwrite")
+        cleanup_group = QGroupBox("Cleanup && Overwrite")
         cleanup_layout = QVBoxLayout(cleanup_group)
         cleanup_layout.setSpacing(6)
 
@@ -87,7 +88,7 @@ class TaggingSettingsDialog(QDialog):
         layout.addWidget(cleanup_group)
 
         # ── 3. Search & Matching Group ──
-        search_group = QGroupBox("Search & Matching")
+        search_group = QGroupBox("Search && Matching")
         search_layout = QFormLayout(search_group)
         search_layout.setSpacing(6)
 
@@ -139,7 +140,9 @@ class TaggingSettingsDialog(QDialog):
         layout.addWidget(embed_group)
 
         # ── Dialog Buttons ──
+        layout.addSpacing(10)
         btn_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        btn_box.setStyleSheet("QPushButton { min-height: 26px; min-width: 75px; padding: 4px 14px; }")
         btn_box.accepted.connect(self._save_and_accept)
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
