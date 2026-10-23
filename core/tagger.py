@@ -352,3 +352,103 @@ def apply_lyrics(
                     pass
 
     return results
+
+
+def strip_lyrics(file_path: str) -> None:
+    """Permanently strip lyrics from an audio file across all metadata tags and sibling sidecars.
+
+    Args:
+        file_path: Path to the target audio file.
+    """
+    path = pathlib.Path(file_path)
+
+    # ── 1. Remove sidecars ─────────────────────────────────────────────────
+    for ext in (".lrc", ".elrc", ".ttml"):
+        sidecar = path.with_suffix(ext)
+        if sidecar.is_file():
+            try:
+                os.unlink(str(sidecar))
+            except OSError:
+                pass
+
+    # ── 2. Remove embedded tags ───────────────────────────────────────────
+    if not path.is_file():
+        return
+
+    try:
+        audio = mutagen.File(file_path, easy=False)
+    except Exception:
+        audio = None
+
+    if audio is None:
+        return
+
+    # FLAC / OGG / Vorbis comments
+    if isinstance(audio, (FLAC, OggVorbis, OggOpus, OggFLAC)) or (
+        hasattr(audio, "tags") and isinstance(audio.tags, VCommentDict)
+    ):
+        modified = False
+        for key in ("LYRICS", "lyrics", "UNSYNCEDLYRICS", "unsyncedlyrics"):
+            if key in audio:
+                del audio[key]
+                modified = True
+            elif audio.tags is not None and key in audio.tags:
+                del audio.tags[key]
+                modified = True
+        if modified:
+            audio.save()
+
+    # MP3 / ID3
+    elif isinstance(audio, (MP3, ID3FileType)) or (
+        hasattr(audio, "tags") and isinstance(audio.tags, ID3)
+    ) or file_path.lower().endswith(".mp3"):
+        if audio.tags is not None:
+            audio.tags.delall("USLT")
+            audio.tags.delall("TXXX:LYRICS")
+            audio.tags.delall("SYLT")
+            audio.save(v2_version=3)
+
+    # MP4 / M4A
+    elif isinstance(audio, MP4) or file_path.lower().endswith((".m4a", ".mp4")):
+        modified = False
+        if hasattr(audio, "pop"):
+            if "\xa9lyr" in audio:
+                audio.pop("\xa9lyr", None)
+                modified = True
+            if "©lyr" in audio:
+                audio.pop("©lyr", None)
+                modified = True
+        if audio.tags is not None and hasattr(audio.tags, "pop"):
+            if "\xa9lyr" in audio.tags:
+                audio.tags.pop("\xa9lyr", None)
+                modified = True
+            if "©lyr" in audio.tags:
+                audio.tags.pop("©lyr", None)
+                modified = True
+        if modified:
+            audio.save()
+
+    else:
+        # Fallback for generic ID3 / dictionary tags
+        if hasattr(audio, "tags") and isinstance(audio.tags, ID3):
+            audio.tags.delall("USLT")
+            audio.tags.delall("TXXX:LYRICS")
+            audio.tags.delall("SYLT")
+            try:
+                audio.save(v2_version=3)
+            except TypeError:
+                audio.save()
+        elif hasattr(audio, "__delitem__"):
+            modified = False
+            for key in ("LYRICS", "lyrics", "UNSYNCEDLYRICS", "unsyncedlyrics"):
+                try:
+                    del audio[key]
+                    modified = True
+                except Exception:
+                    pass
+            if modified:
+                try:
+                    audio.save()
+                except Exception:
+                    pass
+

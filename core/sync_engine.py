@@ -98,7 +98,7 @@ def reconcile_line(original_line: LyricLine, new_text: str) -> LyricLine:
     same_count: bool = n_spans == len(new_words)
 
     if same_count and n_spans > 0:
-        original_slot_texts: List[str] = [s.text for s in original_line.syllables]
+        original_slot_texts: List[str] = [s.text.strip() for s in original_line.syllables]
         diff: int = _token_diff(original_slot_texts, new_words)
     else:
         # Counts differ → always Rule B.

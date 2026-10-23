@@ -14,7 +14,7 @@ from mutagen.mp3 import MP3
 
 from core.models import LyricLine, SongLyrics, SyllableSpan, SyncState, TaggingConfig
 from core.sync_engine import to_enhanced_lrc, to_plain_text, to_ttml
-from core.tagger import apply_lyrics, detect_sync_state
+from core.tagger import apply_lyrics, detect_sync_state, strip_lyrics
 
 
 def _create_minimal_flac(path: str) -> None:
@@ -454,6 +454,36 @@ class TestApplyLyrics(unittest.TestCase):
         apply_lyrics(track_flac, self.song, config=config_both)
         self.assertTrue((self.dir_path / "ext_modes.elrc").is_file())
         self.assertTrue((self.dir_path / "ext_modes.lrc").is_file())
+
+    def test_strip_lyrics_flac_mp3_and_sidecars(self) -> None:
+        """strip_lyrics removes tags from FLAC/MP3 and removes sibling sidecars."""
+        # Setup FLAC with lyrics and sidecars
+        flac_path = str(self.dir_path / "strip_test.flac")
+        _create_minimal_flac(flac_path)
+        apply_lyrics(flac_path, self.song, config=TaggingConfig(write_lrc=True, lrc_extension="both", write_ttml=True, embed_metadata=True))
+        self.assertEqual(detect_sync_state(flac_path), SyncState.WORD)
+        self.assertTrue((self.dir_path / "strip_test.lrc").exists())
+        self.assertTrue((self.dir_path / "strip_test.elrc").exists())
+        self.assertTrue((self.dir_path / "strip_test.ttml").exists())
+
+        # Strip FLAC
+        strip_lyrics(flac_path)
+        self.assertFalse((self.dir_path / "strip_test.lrc").exists())
+        self.assertFalse((self.dir_path / "strip_test.elrc").exists())
+        self.assertFalse((self.dir_path / "strip_test.ttml").exists())
+        self.assertEqual(detect_sync_state(flac_path), SyncState.NONE)
+
+        # Setup MP3 with lyrics
+        mp3_path = str(self.dir_path / "strip_test.mp3")
+        _create_minimal_mp3(mp3_path)
+        apply_lyrics(mp3_path, self.song, config=TaggingConfig(write_lrc=True, write_ttml=True, embed_metadata=True))
+        self.assertEqual(detect_sync_state(mp3_path), SyncState.WORD)
+
+        # Strip MP3
+        strip_lyrics(mp3_path)
+        self.assertFalse((self.dir_path / "strip_test.lrc").exists())
+        self.assertFalse((self.dir_path / "strip_test.ttml").exists())
+        self.assertEqual(detect_sync_state(mp3_path), SyncState.NONE)
 
 
 if __name__ == "__main__":
