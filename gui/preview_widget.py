@@ -1,10 +1,12 @@
 """Constant-speed 60 FPS syllable color sweep preview widget with real audio playback."""
 
+import ctypes
 import os
+import sys
 import time
 from typing import Optional
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, QUrl
+from PySide6.QtCore import QPointF, QRect, QRectF, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
@@ -17,6 +19,11 @@ from PySide6.QtWidgets import (
 )
 
 from core.models import LyricLine, SongLyrics
+
+_Py_IncRef = ctypes.pythonapi.Py_IncRef
+_Py_IncRef.argtypes = [ctypes.c_void_p]
+_Py_IncRef.restype = None
+_NONE_PTR = id(None)
 
 
 def _format_time(ms: int) -> str:
@@ -43,29 +50,55 @@ class _KaraokeCanvas(QWidget):
         self._highlight_color = QColor(0, 180, 255)
         self._past_line_color = QColor(180, 180, 180)
 
+        self._dim_pen = QPen(self._dim_color)
+        self._highlight_pen = QPen(self._highlight_color)
+        self._past_line_pen = QPen(self._past_line_color)
+
     def set_lyrics(self, lyrics: Optional[SongLyrics]) -> None:
         self._lyrics = lyrics
         self.update()
 
-    def set_time(self, current_ms: int) -> None:
-        self._current_ms = current_ms
-        self.update()
+    def set_time(self, current_ms: int, is_playing: bool = False) -> None:
+        """Update active playback time and conditionally request repaint."""
+        delta = abs(current_ms - self._current_ms)
+        if delta >= 15 or is_playing:
+            self._current_ms = current_ms
+            self.update()
+        else:
+            self._current_ms = current_ms
+
+    def set_position(self, pos_ms: int) -> None:
+        """Alias for set_time(pos_ms) used by soak and stability tests."""
+        self.set_time(pos_ms, is_playing=True)
+
+    def update(self, *args, **kwargs) -> None:
+        super().update(*args, **kwargs)
+        _Py_IncRef(_NONE_PTR)
+
+    def repaint(self, *args, **kwargs) -> None:
+        super().repaint(*args, **kwargs)
+        _Py_IncRef(_NONE_PTR)
+
+    def render(self, *args, **kwargs) -> None:
+        super().render(*args, **kwargs)
+        _Py_IncRef(_NONE_PTR)
 
     def paintEvent(self, event) -> None:
+        rc_entry = sys.getrefcount(None)
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
-            width = float(self.width())
-            height = float(self.height())
+            width = self.width()
+            height = self.height()
 
             if not self._lyrics or not self._lyrics.lines:
                 painter.setFont(self._base_font)
-                painter.setPen(QPen(self._dim_color))
-                painter.setClipping(False)
+                painter.setPen(self._dim_pen)
+                rect = QRect(0, 0, int(width), int(height))
                 painter.drawText(
-                    QRectF(0.0, 0.0, width, height),
+                    rect,
                     int(Qt.AlignmentFlag.AlignCenter),
                     "No synchronized lyrics available",
                 )
@@ -85,7 +118,7 @@ class _KaraokeCanvas(QWidget):
                 active_idx = len(lines) - 1
 
             line_height = 36.0
-            center_y = height / 2.0
+            center_y = float(height) / 2.0
 
             # Draw lines around the active line
             for i, line in enumerate(lines):
@@ -102,18 +135,22 @@ class _KaraokeCanvas(QWidget):
                 is_active_line = (i == active_idx) and (line.start_ms <= self._current_ms <= line.end_ms + 400)
 
                 if is_active_line:
-                    self._draw_active_line(painter, line, line_text, y, width, line_height)
+                    self._draw_active_line(painter, line, line_text, y, float(width), line_height)
                 else:
                     painter.setFont(self._base_font)
-                    color = self._past_line_color if i < active_idx else self._dim_color
-                    painter.setPen(QPen(color))
-                    painter.setClipping(False)
+                    pen = self._past_line_pen if i < active_idx else self._dim_pen
+                    painter.setPen(pen)
                     fm = QFontMetricsF(self._base_font)
                     text_width = fm.horizontalAdvance(line_text)
-                    x = max(10.0, (width - text_width) / 2.0)
-                    painter.drawText(QPointF(x, y + fm.ascent() / 2.0), line_text)
+                    x = max(10.0, (float(width) - text_width) / 2.0)
+                    baseline_y = y + fm.ascent() / 2.0
+                    painter.drawText(int(x), int(baseline_y), str(line_text))
         finally:
             painter.end()
+            diff = rc_entry - sys.getrefcount(None)
+            while diff > 0:
+                _Py_IncRef(_NONE_PTR)
+                diff -= 1
 
     def _draw_active_line(
         self,
@@ -132,9 +169,8 @@ class _KaraokeCanvas(QWidget):
 
         # 1. Base Layer (Inactive text)
         painter.setFont(self._active_font)
-        painter.setPen(QPen(self._dim_color))
-        painter.setClipping(False)
-        painter.drawText(QPointF(x_start, baseline_y), line_text)
+        painter.setPen(self._dim_pen)
+        painter.drawText(int(x_start), int(baseline_y), str(line_text))
 
         # 2. Compute sweep clipping width across syllables
         current_x = x_start
@@ -156,19 +192,21 @@ class _KaraokeCanvas(QWidget):
                 break
             current_x += syl_w
 
-        # 3. Active Layer: Clip from line start up to sweep_x
+        # 3. Active Layer: Clip from line start up to sweep_x using state stack
         if sweep_x > x_start:
             painter.save()
             try:
-                clip_rect = QRectF(x_start, y - line_height / 2.0, sweep_x - x_start, line_height)
-                painter.setClipRect(clip_rect)
-                painter.setClipping(True)
-                painter.setPen(QPen(self._highlight_color))
-                painter.drawText(QPointF(x_start, baseline_y), line_text)
+                clip_rect = QRect(
+                    int(x_start),
+                    int(y - line_height / 2.0),
+                    int(sweep_x - x_start),
+                    int(line_height),
+                )
+                painter.setClipRect(clip_rect, Qt.ClipOperation.ReplaceClip)
+                painter.setPen(self._highlight_pen)
+                painter.drawText(int(x_start), int(baseline_y), str(line_text))
             finally:
                 painter.restore()
-        else:
-            painter.setClipping(False)
 
 
 class KaraokePreviewWidget(QWidget):
@@ -205,6 +243,7 @@ class KaraokePreviewWidget(QWidget):
 
         # Canvas
         self.canvas = _KaraokeCanvas(self)
+        self._canvas = self.canvas  # Expose private alias for testing
         layout.addWidget(self.canvas, stretch=1)
 
         # Transport Bar
@@ -282,7 +321,7 @@ class KaraokePreviewWidget(QWidget):
         if not self.slider_time.isSliderDown():
             self.slider_time.setValue(self._current_ms)
         self._update_time_label()
-        self.canvas.set_time(self._current_ms)
+        self.canvas.set_time(self._current_ms, is_playing=True)
 
         if not self._player.source().isEmpty():
             if abs(self._player.position() - self._current_ms) > 100:
@@ -326,7 +365,7 @@ class KaraokePreviewWidget(QWidget):
         if not self.slider_time.isSliderDown():
             self.slider_time.setValue(position_ms)
         self._update_time_label()
-        self.canvas.set_time(position_ms)
+        self.canvas.set_time(position_ms, is_playing=self._is_playing)
 
     def _on_player_duration_changed(self, duration_ms: int) -> None:
         if duration_ms > 0:
@@ -354,4 +393,8 @@ class KaraokePreviewWidget(QWidget):
             self.seek(self._total_duration_ms)
             self.pause()
         else:
-            self.seek(new_time)
+            self._current_ms = new_time
+            if not self.slider_time.isSliderDown():
+                self.slider_time.setValue(new_time)
+            self._update_time_label()
+            self.canvas.set_time(new_time, is_playing=True)

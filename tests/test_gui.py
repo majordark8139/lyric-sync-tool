@@ -1,6 +1,7 @@
 """Headless unit tests for PySide6 GUI widgets, themes, and settings."""
 
 import os
+import sys
 import unittest
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -252,6 +253,37 @@ class TestMainWindow(unittest.TestCase):
     def test_switch_theme(self) -> None:
         self.window.cmb_theme.setCurrentText("OLED Dark")
         self.assertIn("#000000", self.window.styleSheet())
+
+
+class TestPaintStability(unittest.TestCase):
+    """30-second continuous 60 FPS animation soak test verifying refcount stability."""
+
+    def setUp(self) -> None:
+        self.widget = KaraokePreviewWidget()
+        self.widget.resize(500, 300)
+
+    def tearDown(self) -> None:
+        if self.widget is not None:
+            self.widget.deleteLater()
+            self.widget = None
+        app.sendPostedEvents()
+        app.processEvents()
+
+    def test_paint_stability_1800_frames(self) -> None:
+        lyrics = _make_sample_lyrics()
+        self.widget.set_lyrics(lyrics, total_duration_ms=30000)
+
+        rc_start = sys.getrefcount(None)
+        for pos_ms in range(0, 30000, 16):
+            self.widget._canvas.set_position(pos_ms)
+            self.widget._canvas.repaint()
+        rc_end = sys.getrefcount(None)
+
+        self.assertGreaterEqual(
+            rc_end,
+            rc_start - 5,
+            f"None refcount leaked: rc_start={rc_start}, rc_end={rc_end}, diff={rc_end - rc_start}",
+        )
 
 
 if __name__ == "__main__":
