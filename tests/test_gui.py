@@ -102,6 +102,51 @@ class TestSettingsDialog(unittest.TestCase):
         app.sendPostedEvents()
         app.processEvents()
 
+    def test_settings_dialog_tabs_and_master_lrc_toggle(self) -> None:
+        cfg = TaggingConfig(write_lrc=True)
+        dlg = TaggingSettingsDialog(cfg)
+
+        # Verify 3 tabs exist
+        self.assertEqual(dlg.tab_widget.count(), 3)
+        tab_names = [dlg.tab_widget.tabText(i) for i in range(3)]
+        self.assertIn("Sidecars & Cleanup", tab_names)
+        self.assertIn("Search & Ladder", tab_names)
+        self.assertIn("Tag Embedding", tab_names)
+
+        # Verify dual attribute aliases
+        self.assertIs(dlg.chk_write_lrc, dlg.cb_write_lrc)
+        self.assertIs(dlg.rad_lrc, dlg.rb_lrc)
+        self.assertIs(dlg.rad_elrc, dlg.rb_elrc)
+        self.assertIs(dlg.rad_both, dlg.rb_both)
+        self.assertIs(dlg.spin_tolerance, dlg.sb_tolerance)
+
+        # Radio buttons enabled initially because write_lrc=True
+        self.assertTrue(dlg.rad_lrc.isEnabled())
+        self.assertTrue(dlg.rad_elrc.isEnabled())
+        self.assertTrue(dlg.rad_both.isEnabled())
+
+        # Uncheck master write_lrc -> radio buttons must be disabled
+        dlg.chk_write_lrc.setChecked(False)
+        self.assertFalse(dlg.rad_lrc.isEnabled())
+        self.assertFalse(dlg.rad_elrc.isEnabled())
+        self.assertFalse(dlg.rad_both.isEnabled())
+
+        # Returned config has write_lrc=False
+        saved_cfg = dlg.get_config()
+        self.assertFalse(saved_cfg.write_lrc)
+
+        # Re-enable
+        dlg.chk_write_lrc.setChecked(True)
+        self.assertTrue(dlg.rad_lrc.isEnabled())
+        self.assertTrue(dlg.rad_elrc.isEnabled())
+        self.assertTrue(dlg.rad_both.isEnabled())
+        self.assertTrue(dlg.get_config().write_lrc)
+
+        dlg.deleteLater()
+        del dlg
+        app.sendPostedEvents()
+        app.processEvents()
+
 
 class TestKaraokePreviewWidget(unittest.TestCase):
     def setUp(self) -> None:

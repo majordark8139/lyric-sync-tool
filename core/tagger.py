@@ -247,6 +247,19 @@ def apply_lyrics(
 
     results["sidecars_written"] = [str(p) for p in written_sidecars]
 
+    # ── Consolidation Pass ────────────────────────────────────────────────
+    # If writing standard .lrc only, purge lingering .elrc
+    if config.write_lrc and config.lrc_extension.lower() == "lrc":
+        lingering_elrc = path.with_suffix(".elrc")
+        if lingering_elrc.is_file() and lingering_elrc not in written_sidecars:
+            if config.backup_stale_sidecars:
+                bak_path = lingering_elrc.with_name(lingering_elrc.name + ".bak")
+                lingering_elrc.replace(bak_path)
+                results["sidecars_purged"].append(str(bak_path))
+            else:
+                lingering_elrc.unlink()
+                results["sidecars_purged"].append(str(lingering_elrc))
+
     # ── 2. Stale Purge Pass ───────────────────────────────────────────────
     if config.purge_stale_line_sync:
         candidate_siblings = [
@@ -256,14 +269,23 @@ def apply_lyrics(
         ]
         for sibling in candidate_siblings:
             if sibling.is_file() and sibling not in written_sidecars:
-                try:
-                    content = sibling.read_text(encoding="utf-8", errors="replace")
-                except Exception:
-                    content = ""
+                should_purge = False
 
-                # Check if sibling lacks word sync
-                has_word_sync = bool(_WORD_TAG_RE.search(content) or _TTML_WORD_RE.search(content))
-                if not has_word_sync:
+                # If TTML writing is disabled, purge lingering TTML
+                if sibling.suffix.lower() == ".ttml" and not config.write_ttml:
+                    should_purge = True
+                else:
+                    try:
+                        content = sibling.read_text(encoding="utf-8", errors="replace")
+                    except Exception:
+                        content = ""
+
+                    # Check if sibling lacks word sync
+                    has_word_sync = bool(_WORD_TAG_RE.search(content) or _TTML_WORD_RE.search(content))
+                    if not has_word_sync:
+                        should_purge = True
+
+                if should_purge:
                     if config.backup_stale_sidecars:
                         bak_path = sibling.with_name(sibling.name + ".bak")
                         sibling.replace(bak_path)

@@ -485,6 +485,73 @@ class TestApplyLyrics(unittest.TestCase):
         self.assertFalse((self.dir_path / "strip_test.ttml").exists())
         self.assertEqual(detect_sync_state(mp3_path), SyncState.NONE)
 
+    def test_apply_write_lrc_false_writes_zero_lrc_or_elrc(self) -> None:
+        """When write_lrc=False, zero .lrc or .elrc sidecars are created regardless of lrc_extension."""
+        track = str(self.dir_path / "no_lrc.mp3")
+        _create_minimal_mp3(track)
+        config = TaggingConfig(
+            write_lrc=False,
+            lrc_extension="both",
+            write_ttml=False,
+            embed_metadata=False,
+        )
+        res = apply_lyrics(track, self.song, config=config)
+        self.assertEqual(res["sidecars_written"], [])
+        self.assertFalse((self.dir_path / "no_lrc.lrc").exists())
+        self.assertFalse((self.dir_path / "no_lrc.elrc").exists())
+
+    def test_consolidation_purges_lingering_elrc(self) -> None:
+        """When write_lrc=True and lrc_extension='lrc', lingering .elrc is purged."""
+        track = str(self.dir_path / "consolidate.mp3")
+        _create_minimal_mp3(track)
+        elrc_path = self.dir_path / "consolidate.elrc"
+        # 1. Test lingering line-synced ELRC sidecar
+        elrc_path.write_text("[00:01.00]Old line-synced ELRC\n[00:02.00]Second line", encoding="utf-8")
+        self.assertTrue(elrc_path.is_file())
+
+        config = TaggingConfig(
+            write_lrc=True,
+            lrc_extension="lrc",
+            write_ttml=False,
+            embed_metadata=False,
+        )
+        res = apply_lyrics(track, self.song, config=config)
+        self.assertTrue((self.dir_path / "consolidate.lrc").exists())
+        self.assertFalse(elrc_path.exists())
+        self.assertIn(str(elrc_path), res["sidecars_purged"])
+
+        # 2. Test lingering word-synced ELRC with overwrite_existing_word_sync=True
+        elrc_path.write_text("[00:01.00]<00:01.00>Old <00:01.50>ELRC", encoding="utf-8")
+        config_overwrite = TaggingConfig(
+            write_lrc=True,
+            lrc_extension="lrc",
+            write_ttml=False,
+            embed_metadata=False,
+            overwrite_existing_word_sync=True,
+        )
+        res_overwrite = apply_lyrics(track, self.song, config=config_overwrite)
+        self.assertFalse(elrc_path.exists())
+        self.assertIn(str(elrc_path), res_overwrite["sidecars_purged"])
+
+    def test_purge_stale_sidecars_lingering_ttml_when_write_ttml_false(self) -> None:
+        """When write_ttml=False and purge_stale_line_sync=True, lingering .ttml is purged."""
+        track = str(self.dir_path / "purge_ttml.mp3")
+        _create_minimal_mp3(track)
+        ttml_path = self.dir_path / "purge_ttml.ttml"
+        ttml_path.write_text("<tt><body><p begin='00:01.000'>Lingering TTML</p></body></tt>", encoding="utf-8")
+        self.assertTrue(ttml_path.is_file())
+
+        config = TaggingConfig(
+            write_lrc=True,
+            lrc_extension="lrc",
+            write_ttml=False,
+            purge_stale_line_sync=True,
+            embed_metadata=False,
+        )
+        res = apply_lyrics(track, self.song, config=config)
+        self.assertFalse(ttml_path.exists())
+        self.assertIn(str(ttml_path), res["sidecars_purged"])
+
 
 if __name__ == "__main__":
     unittest.main()

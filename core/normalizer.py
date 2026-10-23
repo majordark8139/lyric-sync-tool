@@ -149,6 +149,8 @@ def generate_query_ladder(artist: str, title: str) -> List[Tuple[str, str]]:
       3. Feature Stripped from Title: (artist, strip_features(norm_title))
       4. Feature in Artist: (primary_artist + " " + featured_artist, strip_features(norm_title))
       5. Reissue / Bonus Stripped: (primary_artist, strip_reissue_and_bonus(strip_features(norm_title)))
+      6. Title-Only Fallbacks: ("", strip_features(norm_title)) and
+         ("", strip_reissue_and_bonus(strip_features(norm_title)))
 
     Args:
         artist: Artist string.
@@ -161,7 +163,7 @@ def generate_query_ladder(artist: str, title: str) -> List[Tuple[str, str]]:
 
     def _add(a: str, t: str) -> None:
         cand = (a.strip(), t.strip())
-        if cand[0] and cand[1] and cand not in ladder:
+        if cand[1] and cand not in ladder:
             ladder.append(cand)
 
     # 1. Raw
@@ -188,5 +190,9 @@ def generate_query_ladder(artist: str, title: str) -> List[Tuple[str, str]]:
     # 5. Reissue / Bonus Stripped
     clean_title = strip_reissue_and_bonus(feat_stripped_title)
     _add(primary_artist, clean_title)
+
+    # 6. Title-Only Fallbacks
+    _add("", feat_stripped_title)
+    _add("", clean_title)
 
     return ladder

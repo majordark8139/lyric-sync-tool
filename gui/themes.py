@@ -110,7 +110,55 @@ QTabBar::tab:selected {
     background-color: #ffffff;
     color: #111111;
     font-weight: 600;
-    border-bottom: 1px solid #ffffff;
+    border-bottom: 2px solid #2b79c2;
+}
+
+/* ── Checkboxes & Radio Buttons ── */
+QCheckBox, QRadioButton {
+    color: #1a1a1a;
+    spacing: 6px;
+}
+QCheckBox:disabled, QRadioButton:disabled, QLabel:disabled {
+    color: #999999;
+}
+QCheckBox::indicator, QRadioButton::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid #b8b8b8;
+    background-color: #ffffff;
+}
+QCheckBox::indicator {
+    border-radius: 2px;
+}
+QRadioButton::indicator {
+    border-radius: 7px;
+}
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {
+    border-color: #888888;
+}
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+    border-color: #2b79c2;
+    background-color: #2b79c2;
+}
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {
+    border-color: #d0d0d0;
+    background-color: #eeeeee;
+}
+
+/* ── Group Boxes ── */
+QGroupBox {
+    border: 1px solid #d0d0d0;
+    border-radius: 3px;
+    margin-top: 10px;
+    padding-top: 12px;
+    font-weight: 600;
+    color: #1a1a1a;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 8px;
+    padding: 0 4px;
 }
 
 /* ── Slider ── */
@@ -169,7 +217,7 @@ QStatusBar {
 _DARK_THEME = """
 QWidget {
     background-color: #202225;
-    color: #dcddde;
+    color: #F0F0F0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     font-size: 12px;
 }
@@ -206,7 +254,7 @@ QTableWidget::item:selected {
 }
 QHeaderView::section {
     background-color: #2b2d31;
-    color: #b9bbbe;
+    color: #F0F0F0;
     padding: 3px 6px;
     border: none;
     border-right: 1px solid #36393f;
@@ -239,7 +287,7 @@ QPushButton:disabled {
 /* ── Inputs & Edits ── */
 QPlainTextEdit, QTextEdit, QLineEdit {
     background-color: #18191c;
-    color: #e0e0e0;
+    color: #FFFFFF;
     border: 1px solid #36393f;
     border-radius: 2px;
     padding: 2px;
@@ -250,7 +298,7 @@ QPlainTextEdit:focus, QTextEdit:focus, QLineEdit:focus {
 
 QComboBox, QSpinBox {
     background-color: #25272b;
-    color: #e0e0e0;
+    color: #FFFFFF;
     border: 1px solid #40444b;
     border-radius: 2px;
     padding: 2px 6px;
@@ -258,23 +306,75 @@ QComboBox, QSpinBox {
 
 /* ── Tabs ── */
 QTabWidget::pane {
-    border: 1px solid #36393f;
+    border: 1px solid #40444b;
     background-color: #1e1f22;
     top: -1px;
 }
 QTabBar::tab {
     background-color: #2b2d31;
-    color: #8e9297;
-    border: 1px solid #36393f;
+    color: #999999;
+    border: 1px solid #40444b;
     border-bottom: none;
-    padding: 4px 12px;
+    padding: 6px 16px;
     margin-right: 2px;
+}
+QTabBar::tab:hover {
+    background-color: #35383e;
+    color: #F0F0F0;
 }
 QTabBar::tab:selected {
     background-color: #1e1f22;
-    color: #ffffff;
+    color: #FFFFFF;
     font-weight: 600;
-    border-bottom: 1px solid #1e1f22;
+    border-bottom: 2px solid #58A6FF;
+}
+
+/* ── Checkboxes & Radio Buttons ── */
+QCheckBox, QRadioButton {
+    color: #F0F0F0;
+    spacing: 6px;
+}
+QCheckBox:disabled, QRadioButton:disabled, QLabel:disabled {
+    color: #555555;
+}
+QCheckBox::indicator, QRadioButton::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid #666666;
+    background-color: #1e1f22;
+}
+QCheckBox::indicator {
+    border-radius: 2px;
+}
+QRadioButton::indicator {
+    border-radius: 7px;
+}
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {
+    border-color: #888888;
+}
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+    border-color: #58A6FF;
+    background-color: #388BFD;
+}
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {
+    border-color: #444444;
+    background-color: #18191c;
+}
+
+/* ── Group Boxes ── */
+QGroupBox {
+    border: 1px solid #36393f;
+    border-radius: 3px;
+    margin-top: 10px;
+    padding-top: 12px;
+    font-weight: 600;
+    color: #F0F0F0;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 8px;
+    padding: 0 4px;
 }
 
 /* ── Slider ── */
@@ -423,23 +523,75 @@ QComboBox, QSpinBox {
 
 /* ── Tabs ── */
 QTabWidget::pane {
-    border: 1px solid #222222;
+    border: 1px solid #333333;
     background-color: #000000;
     top: -1px;
 }
 QTabBar::tab {
     background-color: #0d0d0d;
     color: #888888;
-    border: 1px solid #222222;
+    border: 1px solid #333333;
     border-bottom: none;
-    padding: 4px 12px;
+    padding: 6px 16px;
     margin-right: 2px;
+}
+QTabBar::tab:hover {
+    background-color: #1a1a1a;
+    color: #ffffff;
 }
 QTabBar::tab:selected {
     background-color: #000000;
     color: #ffffff;
     font-weight: 600;
-    border-bottom: 1px solid #000000;
+    border-bottom: 2px solid #58A6FF;
+}
+
+/* ── Checkboxes & Radio Buttons ── */
+QCheckBox, QRadioButton {
+    color: #FFFFFF;
+    spacing: 6px;
+}
+QCheckBox:disabled, QRadioButton:disabled, QLabel:disabled {
+    color: #555555;
+}
+QCheckBox::indicator, QRadioButton::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid #777777;
+    background-color: #0a0a0a;
+}
+QCheckBox::indicator {
+    border-radius: 2px;
+}
+QRadioButton::indicator {
+    border-radius: 7px;
+}
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {
+    border-color: #999999;
+}
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+    border-color: #58A6FF;
+    background-color: #388BFD;
+}
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {
+    border-color: #333333;
+    background-color: #050505;
+}
+
+/* ── Group Boxes ── */
+QGroupBox {
+    border: 1px solid #2a2a2a;
+    border-radius: 3px;
+    margin-top: 10px;
+    padding-top: 12px;
+    font-weight: 600;
+    color: #FFFFFF;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 8px;
+    padding: 0 4px;
 }
 
 /* ── Slider ── */

@@ -211,6 +211,44 @@ class TestKugouLadderSearch(unittest.TestCase):
         # krctype=2 (id c2) must have been chosen first despite lower score
         self.assertEqual(download_ids_requested[0], "c2")
 
+    def test_title_only_fallback_candidates_in_ladder(self) -> None:
+        """Verify title-only fallback candidates are at the end of the ladder."""
+        from core.normalizer import generate_query_ladder
+        ladder = generate_query_ladder("Coldplay", "Yellow (Live) - Bonus Track")
+        # Check that empty artist candidates exist
+        empty_artist_cands = [cand for cand in ladder if cand[0] == ""]
+        self.assertTrue(len(empty_artist_cands) >= 1)
+        self.assertIn(("", "Yellow (Live) - Bonus Track"), empty_artist_cands)
+        self.assertIn(("", "Yellow (Live)"), empty_artist_cands)
+        # The last candidates in the ladder should be title-only
+        self.assertEqual(ladder[-1][0], "")
+
+    def test_kugou_search_with_empty_artist_keyword_format(self) -> None:
+        """When q_artist is empty, the Kugou keyword is formatted as just the title without leading dash."""
+        from unittest.mock import patch
+        from core.providers.kugou import KugouProvider
+
+        provider = KugouProvider()
+        queries_made = []
+
+        def mock_make_request(url: str):
+            queries_made.append(url)
+            return {"candidates": []}
+
+        with patch("core.providers.kugou._make_request", side_effect=mock_make_request):
+            provider.search_word_sync(
+                title="A Sky Full of Stars",
+                artist="",
+                duration_ms=260000,
+            )
+
+        self.assertTrue(len(queries_made) > 0)
+        # Verify query param has keyword=A+Sky+Full+of+Stars and does not have keyword=-+
+        first_query = queries_made[0]
+        self.assertIn("keyword=A+Sky+Full+of+Stars", first_query)
+        self.assertNotIn("keyword=-+", first_query)
+        self.assertNotIn("keyword=%20-+", first_query)
+
 
 if __name__ == "__main__":
     unittest.main()

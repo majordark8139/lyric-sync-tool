@@ -4,9 +4,12 @@ import base64
 import json
 import re
 import urllib.parse
-import urllib.request
 import zlib
 from typing import Any, Dict, List, Optional
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
 from core.models import LyricLine, SongLyrics, SyllableSpan, TaggingConfig
 from core.normalizer import generate_query_ladder
@@ -43,6 +46,19 @@ _HEADERS: Dict[str, str] = {
 }
 
 _DURATION_TOLERANCE_MS: int = 2500
+
+# Resilient HTTP session with automatic retries for transient server errors
+_retries = Retry(
+    total=3,
+    backoff_factor=1.5,
+    status_forcelist=[500, 502, 503, 504],
+    raise_on_status=False,
+)
+_adapter = HTTPAdapter(max_retries=_retries)
+_HTTP_SESSION = requests.Session()
+_HTTP_SESSION.mount("http://", _adapter)
+_HTTP_SESSION.mount("https://", _adapter)
+_HTTP_SESSION.headers.update(_HEADERS)
 
 
 def unpack_krc(base64_payload: str) -> str:
@@ -148,11 +164,11 @@ def _make_request(url: str) -> Optional[Dict[str, Any]]:
     Returns:
         Parsed JSON dict, or *None* on network / decode error.
     """
-    req = urllib.request.Request(url, headers=_HEADERS)
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body: bytes = resp.read()
-        return json.loads(body.decode("utf-8"))
+        resp = _HTTP_SESSION.get(url, timeout=10)
+        if resp.status_code == 200:
+            return resp.json()
+        return None
     except Exception:
         return None
 
@@ -197,7 +213,7 @@ class KugouProvider(BaseLyricsProvider):
             ladder = generate_query_ladder(artist, title)
 
         for step_idx, (q_artist, q_title) in enumerate(ladder):
-            keyword = f"{q_artist} - {q_title}"
+            keyword = q_title if not q_artist else f"{q_artist} - {q_title}"
             search_params = urllib.parse.urlencode({
                 "ver": "1",
                 "man": "yes",
