@@ -34,16 +34,59 @@ class SongLyrics:
 
     def detect_sub_vocals(self) -> None:
         """Detect and mark background/sub-vocal lines during temporal overlaps."""
-        for i in range(1, len(self.lines)):
+        if not self.lines:
+            return
+
+        # 1. Any line enclosed in parentheses is classified as background vocal
+        for line in self.lines:
+            text = "".join(s.text for s in line.syllables).strip()
+            if (text.startswith("(") and text.endswith(")")) or (text.startswith("（") and text.endswith("）")):
+                line.is_background = True
+
+        # 2. Track lead line and classify overlapping lines
+        current_lead: Optional[LyricLine] = None
+        for i, line in enumerate(self.lines):
+            if current_lead is None:
+                if not line.is_background:
+                    current_lead = line
+                continue
+
+            text = "".join(s.text for s in line.syllables).strip()
+            lead_text = "".join(s.text for s in current_lead.syllables).strip()
+
             prev = self.lines[i - 1]
-            curr = self.lines[i]
-            # If line overlaps with previous line or text is parenthesized during overlap
-            if curr.start_ms < prev.end_ms:
-                curr.is_background = True
+            overlaps = (line.start_ms < current_lead.end_ms) or (line.start_ms < prev.end_ms)
+
+            if overlaps:
+                # If overlapping line has identical text as lead line, flag as echo layer
+                if text and (text == lead_text or text == "".join(s.text for s in prev.syllables).strip()):
+                    line.is_background = True
+                    continue
+
+                if line.is_background:
+                    continue
+
+                # Compare line with current_lead to designate earlier/longer as Lead
+                lead_dur = current_lead.end_ms - current_lead.start_ms
+                curr_dur = line.end_ms - line.start_ms
+
+                if current_lead.start_ms < line.start_ms:
+                    line.is_background = True
+                elif current_lead.start_ms > line.start_ms:
+                    current_lead.is_background = True
+                    line.is_background = False
+                    current_lead = line
+                else:
+                    if lead_dur >= curr_dur:
+                        line.is_background = True
+                    else:
+                        current_lead.is_background = True
+                        line.is_background = False
+                        current_lead = line
             else:
-                full_text = "".join(s.text for s in curr.syllables).strip()
-                if (full_text.startswith("(") and full_text.endswith(")")) and curr.start_ms < prev.end_ms:
-                    curr.is_background = True
+                # No overlap: if this line is not background, it becomes the new lead line
+                if not line.is_background:
+                    current_lead = line
 
 
 @dataclass

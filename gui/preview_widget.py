@@ -107,21 +107,22 @@ class _KaraokeCanvas(QWidget):
                 )
                 return
 
-            lines = self._lyrics.lines
+            all_lines = self._lyrics.lines
+            lead_lines = [line for line in all_lines if not line.is_background]
+            if not lead_lines:
+                lead_lines = all_lines
+            bg_lines = [line for line in all_lines if line.is_background]
 
-            # 1. Identify active lead line and concurrent sub-vocal line (if any)
+            # 1. Identify active lead line in lead_lines
             active_lead_idx = -1
-            active_sub_idx = -1
-
-            # Find active lead line
-            for i, line in enumerate(lines):
-                if not line.is_background and (line.start_ms <= self._current_ms <= line.end_ms + 400):
+            for i, line in enumerate(lead_lines):
+                if line.start_ms <= self._current_ms <= line.end_ms + 400:
                     active_lead_idx = i
                     break
 
-            # Fallback if no active lead line is playing
+            # Fallback if no lead line is currently singing
             if active_lead_idx == -1:
-                for i, line in enumerate(lines):
+                for i, line in enumerate(lead_lines):
                     if line.start_ms <= self._current_ms <= line.end_ms:
                         active_lead_idx = i
                         break
@@ -129,27 +130,29 @@ class _KaraokeCanvas(QWidget):
                         active_lead_idx = max(0, i - 1)
                         break
                 else:
-                    active_lead_idx = len(lines) - 1
+                    active_lead_idx = len(lead_lines) - 1
 
-            # Check for concurrent active sub-vocal line
-            for i, line in enumerate(lines):
-                if line.is_background and (line.start_ms <= self._current_ms <= line.end_ms + 400):
-                    active_sub_idx = i
-                    break
+            active_lead_line = lead_lines[active_lead_idx] if 0 <= active_lead_idx < len(lead_lines) else None
+            is_lead_singing = (
+                active_lead_line is not None
+                and active_lead_line.start_ms <= self._current_ms <= active_lead_line.end_ms + 400
+            )
 
-            active_idx = active_lead_idx
-            line_height = 36.0
+            # Check if any background line is active at current_ms while lead line is active
+            active_bg_line: Optional[LyricLine] = None
+            if is_lead_singing:
+                for bg in bg_lines:
+                    if bg.start_ms <= self._current_ms <= bg.end_ms:
+                        active_bg_line = bg
+                        break
+
+            line_height = 42.0
             center_y = float(height) / 2.0
 
-            # 2. Render all lines relative to the active lead line
-            for i, line in enumerate(lines):
-                # If this is the active sub-line and concurrently rendered under lead, skip here
-                if i == active_sub_idx and active_sub_idx != active_idx:
-                    continue
-
-                offset_idx = i - active_idx
-                extra_sub_offset = 20.0 if (active_sub_idx != -1 and offset_idx > 0) else 0.0
-                y = center_y + (offset_idx * line_height) + extra_sub_offset
+            # 2. Render ONLY primary lead lines in the vertical scrolling list
+            for i, line in enumerate(lead_lines):
+                offset_idx = i - active_lead_idx
+                y = center_y + (offset_idx * line_height)
 
                 if y < -line_height or y > height + line_height:
                     continue
@@ -158,7 +161,7 @@ class _KaraokeCanvas(QWidget):
                 if not line_text:
                     continue
 
-                is_active_lead = (i == active_idx) and (line.start_ms <= self._current_ms <= line.end_ms + 400)
+                is_active_lead = (i == active_lead_idx) and is_lead_singing
 
                 if is_active_lead:
                     # Draw lead vocal line centered at normal font size
@@ -173,15 +176,14 @@ class _KaraokeCanvas(QWidget):
                         self._dim_pen,
                     )
                     # If an overlapping sub-vocal is active concurrently, render it directly beneath
-                    if active_sub_idx != -1:
-                        sub_line = lines[active_sub_idx]
-                        sub_text = "".join(s.text for s in sub_line.syllables)
+                    if active_bg_line is not None:
+                        sub_text = "".join(s.text for s in active_bg_line.syllables)
                         if sub_text:
                             self._draw_active_line(
                                 painter,
-                                sub_line,
+                                active_bg_line,
                                 sub_text,
-                                y + 22.0,
+                                y + 20.0,
                                 float(width),
                                 20.0,
                                 self._sub_font,
@@ -189,7 +191,7 @@ class _KaraokeCanvas(QWidget):
                             )
                 else:
                     painter.setFont(self._base_font)
-                    pen = self._past_line_pen if i < active_idx else self._dim_pen
+                    pen = self._past_line_pen if i < active_lead_idx else self._dim_pen
                     painter.setPen(pen)
                     fm = QFontMetricsF(self._base_font)
                     text_width = fm.horizontalAdvance(line_text)

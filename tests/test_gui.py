@@ -491,6 +491,37 @@ class TestSubVocals(unittest.TestCase):
         # Line 2 does not overlap (start 4000 >= end 3500) -> is_background = False
         self.assertFalse(song.lines[2].is_background)
 
+    def test_lead_vs_background_earlier_longer_and_echo(self) -> None:
+        # 1. Parenthesized line standalone
+        song_paren = SongLyrics(
+            lines=[
+                LyricLine(start_ms=1000, end_ms=2000, syllables=[SyllableSpan(1000, 2000, "(Chant)")]),
+                LyricLine(start_ms=2500, end_ms=4000, syllables=[SyllableSpan(2500, 4000, "Lead Vocal")]),
+            ]
+        )
+        self.assertTrue(song_paren.lines[0].is_background)
+        self.assertFalse(song_paren.lines[1].is_background)
+
+        # 2. Earlier line is lead, overlapping line is background
+        song_earlier = SongLyrics(
+            lines=[
+                LyricLine(start_ms=1000, end_ms=3000, syllables=[SyllableSpan(1000, 3000, "Main Lead")]),
+                LyricLine(start_ms=1800, end_ms=2800, syllables=[SyllableSpan(1800, 2800, "Backing Harmony")]),
+            ]
+        )
+        self.assertFalse(song_earlier.lines[0].is_background)
+        self.assertTrue(song_earlier.lines[1].is_background)
+
+        # 3. Echo layer with exact same text
+        song_echo = SongLyrics(
+            lines=[
+                LyricLine(start_ms=1000, end_ms=3000, syllables=[SyllableSpan(1000, 3000, "Hello World")]),
+                LyricLine(start_ms=1500, end_ms=2500, syllables=[SyllableSpan(1500, 2500, "Hello World")]),
+            ]
+        )
+        self.assertFalse(song_echo.lines[0].is_background)
+        self.assertTrue(song_echo.lines[1].is_background)
+
     def test_sub_vocal_rendering_does_not_crash(self) -> None:
         from PySide6.QtGui import QPixmap
         song = SongLyrics(
@@ -509,6 +540,13 @@ class TestSubVocals(unittest.TestCase):
 
 
 class TestManualSearchDialog(unittest.TestCase):
+    def test_initial_state_and_status_label(self) -> None:
+        from gui.manual_search_dialog import ManualSearchDialog
+        dlg = ManualSearchDialog()
+        self.assertEqual(dlg.lbl_status.text(), "Enter Title and Artist, then click Search.")
+        self.assertEqual(dlg.table_results.rowCount(), 0)
+        dlg.deleteLater()
+
     def test_manual_search_and_apply(self) -> None:
         from unittest.mock import patch
         from tests.test_core import _make_krc_payload
@@ -533,9 +571,11 @@ class TestManualSearchDialog(unittest.TestCase):
 
         with patch("gui.manual_search_dialog._make_request", side_effect=mock_request):
             dlg = ManualSearchDialog(title="Test Title", artist="Test Artist", duration_ms=180000)
+            dlg.wait_for_search()
             self.assertEqual(dlg.table_results.rowCount(), 1)
             self.assertEqual(dlg.table_results.item(0, 0).text(), "Test Title")
             self.assertEqual(dlg.table_results.item(0, 3).text(), "WORD")
+            self.assertIn("Found 1 result(s)", dlg.lbl_status.text())
 
             # Select and apply
             dlg.table_results.selectRow(0)
@@ -544,6 +584,82 @@ class TestManualSearchDialog(unittest.TestCase):
             lyrics = dlg.get_selected_lyrics()
             self.assertIsNotNone(lyrics)
             self.assertEqual(len(lyrics.lines), 1)
+            dlg.deleteLater()
+
+    def test_smart_auto_fallback(self) -> None:
+        from unittest.mock import patch
+        from gui.manual_search_dialog import ManualSearchDialog
+
+        def mock_request(url: str):
+            # Primary search with artist fails
+            if "keyword=Coldplay+-+Yellow+%28Live%29" in url or "keyword=Coldplay" in url:
+                return {"candidates": []}
+            # Fallback search with sanitized title succeeds
+            if "keyword=Yellow+Live" in url:
+                return {
+                    "candidates": [
+                        {"id": "202", "accesskey": "acc2", "song": "Yellow Live", "singer": "Coldplay", "duration": 210000, "krctype": 2}
+                    ]
+                }
+            return {"candidates": []}
+
+        with patch("gui.manual_search_dialog._make_request", side_effect=mock_request):
+            dlg = ManualSearchDialog(title="Yellow (Live)", artist="Coldplay", duration_ms=210000)
+            dlg.wait_for_search()
+            self.assertEqual(dlg.table_results.rowCount(), 1)
+            self.assertIn("Showing results for fallback query: 'Yellow Live'", dlg.lbl_status.text())
+            dlg.deleteLater()
+
+    def test_zero_candidates_status(self) -> None:
+        from unittest.mock import patch
+        from gui.manual_search_dialog import ManualSearchDialog
+
+        with patch("gui.manual_search_dialog._make_request", return_value={"candidates": []}):
+            dlg = ManualSearchDialog(title="Nonexistent Song", artist="Unknown", duration_ms=100000)
+            dlg.wait_for_search()
+            self.assertEqual(dlg.table_results.rowCount(), 0)
+            self.assertIn("No candidates found", dlg.lbl_status.text())
+            dlg.deleteLater()
+
+    def test_network_error_status(self) -> None:
+        from unittest.mock import patch
+        from gui.manual_search_dialog import ManualSearchDialog
+
+        with patch("gui.manual_search_dialog._make_request", return_value=None):
+            dlg = ManualSearchDialog(title="Test Song", artist="Test", duration_ms=100000)
+            dlg.wait_for_search()
+            self.assertEqual(dlg.table_results.rowCount(), 0)
+            self.assertIn("Connection error", dlg.lbl_status.text())
+            dlg.deleteLater()
+
+    def test_cell_double_click_triggers_apply(self) -> None:
+        from unittest.mock import patch
+        from tests.test_core import _make_krc_payload
+        from gui.manual_search_dialog import ManualSearchDialog
+
+        valid_krc = (
+            "[ti:Test Title]\n[ar:Test Artist]\n"
+            "[1000,2000]<0,500,-1>Hel<500,500,-1>lo\n"
+        )
+        krc_payload = _make_krc_payload(valid_krc)
+
+        def mock_request(url: str):
+            if "search" in url:
+                return {
+                    "candidates": [
+                        {"id": "101", "accesskey": "acc1", "song": "Test Title", "singer": "Test Artist", "duration": 180000, "krctype": 2}
+                    ]
+                }
+            elif "download" in url:
+                return {"content": krc_payload}
+            return None
+
+        with patch("gui.manual_search_dialog._make_request", side_effect=mock_request):
+            dlg = ManualSearchDialog(title="Test Title", artist="Test Artist", duration_ms=180000)
+            dlg.wait_for_search()
+            # Double click cell (0, 0)
+            dlg._on_cell_double_clicked(0, 0)
+            self.assertIsNotNone(dlg.get_selected_lyrics())
             dlg.deleteLater()
 
 
