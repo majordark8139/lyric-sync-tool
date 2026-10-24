@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 from core.batch_worker import BatchTaggerWorker, ScannerWorker, _extract_tag_string
 from core.models import LyricLine, SongLyrics, SyllableSpan, SyncState, TaggingConfig, TrackItem
 from core.providers.kugou import KugouProvider
-from core.tagger import apply_lyrics, detect_sync_state, strip_lyrics
+from core.tagger import apply_lyrics, detect_sync_state, read_track_lyrics, strip_lyrics
 from gui.editor_widget import LyricsEditorWidget
 from gui.manual_search_dialog import ManualSearchDialog
 from gui.preview_widget import KaraokePreviewWidget
@@ -110,7 +110,10 @@ def _parse_lrc_content(text: str) -> Optional[SongLyrics]:
 
 
 def load_lyrics_for_file(file_path: str) -> Optional[SongLyrics]:
-    """Inspect and load existing lyrics for a file from sidecars or tags."""
+    """Inspect and load existing lyrics for a file from sidecars or embedded tags."""
+    lyrics = read_track_lyrics(file_path)
+    if lyrics:
+        return lyrics
     p = pathlib.Path(file_path)
     for ext in (".lrc", ".elrc"):
         sidecar = p.with_suffix(ext)
@@ -579,6 +582,14 @@ class MainWindow(QMainWindow):
         if track.matched_lyrics is None:
             track.matched_lyrics = load_lyrics_for_file(track.file_path)
 
+        if track.matched_lyrics is not None:
+            if getattr(track.matched_lyrics, "is_word_synced", False):
+                track.sync_state = SyncState.WORD
+            else:
+                track.sync_state = SyncState.LINE
+            item.setText(3, track.sync_state.name)
+            self._apply_item_styling(item, track)
+
         self.preview_widget.load_track(track.file_path, track.matched_lyrics)
         self.editor_widget.set_lyrics(track.matched_lyrics)
 
@@ -597,6 +608,13 @@ class MainWindow(QMainWindow):
         if track:
             if track.matched_lyrics is None:
                 track.matched_lyrics = load_lyrics_for_file(track.file_path)
+            if track.matched_lyrics is not None:
+                if getattr(track.matched_lyrics, "is_word_synced", False):
+                    track.sync_state = SyncState.WORD
+                else:
+                    track.sync_state = SyncState.LINE
+                item.setText(3, track.sync_state.name)
+                self._apply_item_styling(item, track)
             self.preview_widget.load_track(track.file_path, track.matched_lyrics)
             self.editor_widget.set_lyrics(track.matched_lyrics)
             self.preview_widget.play()

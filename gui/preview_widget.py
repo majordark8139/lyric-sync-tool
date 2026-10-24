@@ -47,9 +47,9 @@ class _KaraokeCanvas(QWidget):
         self._active_font = QFont("sans-serif", 14, QFont.Bold)
         self._sub_font = QFont("sans-serif", 10, QFont.Bold)
 
-        self._dim_color = QColor(140, 140, 140)
+        self._dim_color = QColor("#8b949e")
         self._sub_dim_color = QColor(100, 100, 100)
-        self._highlight_color = QColor(0, 180, 255)
+        self._highlight_color = QColor("#58A6FF")
         self._past_line_color = QColor(180, 180, 180)
 
         self._dim_pen = QPen(self._dim_color)
@@ -108,50 +108,37 @@ class _KaraokeCanvas(QWidget):
                 return
 
             all_lines = self._lyrics.lines
-            lead_lines = [line for line in all_lines if not line.is_background]
-            if not lead_lines:
-                lead_lines = all_lines
-            bg_lines = [line for line in all_lines if line.is_background]
+            is_word_synced = getattr(self._lyrics, "is_word_synced", False)
 
-            # 1. Identify active lead line in lead_lines
-            active_lead_idx = -1
-            for i, line in enumerate(lead_lines):
+            # Determine is_word_synced from syllables if not set on SongLyrics object
+            if not is_word_synced:
+                for line in all_lines:
+                    if len(line.syllables) > 1:
+                        is_word_synced = True
+                        break
+
+            # ── 1. Find the active line index (chronological, all lines visible) ──
+            active_idx = -1
+            for i, line in enumerate(all_lines):
                 if line.start_ms <= self._current_ms <= line.end_ms + 400:
-                    active_lead_idx = i
+                    active_idx = i
                     break
 
-            # Fallback if no lead line is currently singing
-            if active_lead_idx == -1:
-                for i, line in enumerate(lead_lines):
-                    if line.start_ms <= self._current_ms <= line.end_ms:
-                        active_lead_idx = i
-                        break
-                    elif line.start_ms > self._current_ms:
-                        active_lead_idx = max(0, i - 1)
+            # Pre-cursor fallback: snap to last line before current_ms
+            if active_idx == -1:
+                for i, line in enumerate(all_lines):
+                    if line.start_ms > self._current_ms:
+                        active_idx = max(0, i - 1)
                         break
                 else:
-                    active_lead_idx = len(lead_lines) - 1
-
-            active_lead_line = lead_lines[active_lead_idx] if 0 <= active_lead_idx < len(lead_lines) else None
-            is_lead_singing = (
-                active_lead_line is not None
-                and active_lead_line.start_ms <= self._current_ms <= active_lead_line.end_ms + 400
-            )
-
-            # Check if any background line is active at current_ms while lead line is active
-            active_bg_line: Optional[LyricLine] = None
-            if is_lead_singing:
-                for bg in bg_lines:
-                    if bg.start_ms <= self._current_ms <= bg.end_ms:
-                        active_bg_line = bg
-                        break
+                    active_idx = max(0, len(all_lines) - 1)
 
             line_height = 42.0
             center_y = float(height) / 2.0
 
-            # 2. Render ONLY primary lead lines in the vertical scrolling list
-            for i, line in enumerate(lead_lines):
-                offset_idx = i - active_lead_idx
+            # ── 2. Render ALL lines in chronological order ─────────────────────
+            for i, line in enumerate(all_lines):
+                offset_idx = i - active_idx
                 y = center_y + (offset_idx * line_height)
 
                 if y < -line_height or y > height + line_height:
@@ -161,37 +148,40 @@ class _KaraokeCanvas(QWidget):
                 if not line_text:
                     continue
 
-                is_active_lead = (i == active_lead_idx) and is_lead_singing
+                is_active = (line.start_ms <= self._current_ms <= line.end_ms + 400)
 
-                if is_active_lead:
-                    # Draw lead vocal line centered at normal font size
-                    self._draw_active_line(
-                        painter,
-                        line,
-                        line_text,
-                        y,
-                        float(width),
-                        line_height,
-                        self._active_font,
-                        self._dim_pen,
-                    )
-                    # If an overlapping sub-vocal is active concurrently, render it directly beneath
-                    if active_bg_line is not None:
-                        sub_text = "".join(s.text for s in active_bg_line.syllables)
-                        if sub_text:
-                            self._draw_active_line(
-                                painter,
-                                active_bg_line,
-                                sub_text,
-                                y + 20.0,
-                                float(width),
-                                20.0,
-                                self._sub_font,
-                                self._sub_dim_pen,
-                            )
+                if is_active and i == active_idx:
+                    # ── Mode B: Word-synced → true per-syllable sub-pixel sweep ──
+                    if is_word_synced and line.syllables:
+                        self._draw_word_synced_line(painter, line, line_text, y, float(width), line_height)
+                    else:
+                        # ── Mode A: Line-synced → entire line in solid active colour ──
+                        self._draw_line_synced_active(painter, line_text, y, float(width), line_height)
+
+                    # Concurrent background vocal directly beneath active lead line
+                    if not line.is_background:
+                        active_bg: Optional[LyricLine] = None
+                        for bg in all_lines:
+                            if bg.is_background and bg.start_ms <= self._current_ms <= bg.end_ms:
+                                active_bg = bg
+                                break
+                        if active_bg is not None:
+                            sub_text = "".join(s.text for s in active_bg.syllables)
+                            if sub_text:
+                                sub_y = y + 20.0
+                                if is_word_synced and active_bg.syllables:
+                                    self._draw_word_synced_line(
+                                        painter, active_bg, sub_text, sub_y,
+                                        float(width), 20.0, self._sub_font, self._sub_dim_pen
+                                    )
+                                else:
+                                    self._draw_line_synced_active(
+                                        painter, sub_text, sub_y, float(width), 20.0,
+                                        self._sub_font, self._highlight_pen
+                                    )
                 else:
                     painter.setFont(self._base_font)
-                    pen = self._past_line_pen if i < active_lead_idx else self._dim_pen
+                    pen = self._past_line_pen if i < active_idx else self._dim_pen
                     painter.setPen(pen)
                     fm = QFontMetricsF(self._base_font)
                     text_width = fm.horizontalAdvance(line_text)
@@ -205,6 +195,100 @@ class _KaraokeCanvas(QWidget):
                 _Py_IncRef(_NONE_PTR)
                 diff -= 1
 
+    def _draw_line_synced_active(
+        self,
+        painter: QPainter,
+        line_text: str,
+        y: float,
+        view_width: float,
+        line_height: float,
+        font: Optional[QFont] = None,
+        pen: Optional[QPen] = None,
+    ) -> None:
+        """Mode A: Line-synced — draw entire line in solid active highlight colour.
+
+        No character-level interpolation; the full line lights up solidly while
+        ``line.start_ms <= current_ms <= line.end_ms``.
+        """
+        f = font if font is not None else self._active_font
+        p = pen if pen is not None else self._highlight_pen
+        painter.setFont(f)
+        painter.setPen(p)
+        fm = QFontMetricsF(f)
+        text_width = fm.horizontalAdvance(line_text)
+        x = max(10.0, (view_width - text_width) / 2.0)
+        baseline_y = y + fm.ascent() / 2.0
+        painter.drawText(int(x), int(baseline_y), str(line_text))
+
+    def _draw_word_synced_line(
+        self,
+        painter: QPainter,
+        line: LyricLine,
+        line_text: str,
+        y: float,
+        view_width: float,
+        line_height: float,
+        font: Optional[QFont] = None,
+        dim_pen: Optional[QPen] = None,
+    ) -> None:
+        """Mode B: Word-synced — true per-syllable sub-pixel sweep.
+
+        Algorithm:
+        - Completed syllables (abs_end_ms <= current_ms): fully illuminated.
+        - Active syllable k (abs_start_ms <= current_ms < abs_end_ms):
+            alpha = (current_ms - abs_start_ms) / max(1, abs_end_ms - abs_start_ms)
+            clip width = sum_of_completed_widths + alpha * width_k
+        - Future syllables (abs_start_ms > current_ms): dimmed base colour.
+        """
+        f = font if font is not None else self._active_font
+        dp = dim_pen if dim_pen is not None else self._dim_pen
+
+        fm = QFontMetricsF(f)
+        text_width = fm.horizontalAdvance(line_text)
+        x_start = max(10.0, (view_width - text_width) / 2.0)
+        baseline_y = y + fm.ascent() / 2.0
+
+        # 1. Draw full line in dim colour as base layer
+        painter.setFont(f)
+        painter.setPen(dp)
+        painter.drawText(int(x_start), int(baseline_y), str(line_text))
+
+        # 2. Compute exact pixel sweep position across syllables
+        cursor_x = x_start
+        sweep_x = x_start
+
+        for syl in line.syllables:
+            syl_w = fm.horizontalAdvance(syl.text)
+            if self._current_ms >= syl.abs_end_ms:
+                # Syllable fully completed
+                sweep_x = cursor_x + syl_w
+                cursor_x += syl_w
+            elif self._current_ms >= syl.abs_start_ms:
+                # Active syllable: linear sub-pixel interpolation
+                dur = max(1, syl.abs_end_ms - syl.abs_start_ms)
+                alpha = min(1.0, max(0.0, (self._current_ms - syl.abs_start_ms) / dur))
+                sweep_x = cursor_x + (syl_w * alpha)
+                break
+            else:
+                # Future syllable: stop
+                break
+
+        # 3. Clip from line start to sweep_x and redraw in highlight colour
+        if sweep_x > x_start:
+            painter.save()
+            try:
+                clip_rect = QRect(
+                    int(x_start),
+                    int(y - line_height),
+                    int(sweep_x - x_start),
+                    int(line_height * 2),
+                )
+                painter.setClipRect(clip_rect, Qt.ClipOperation.ReplaceClip)
+                painter.setPen(self._highlight_pen)
+                painter.drawText(int(x_start), int(baseline_y), str(line_text))
+            finally:
+                painter.restore()
+
     def _draw_active_line(
         self,
         painter: QPainter,
@@ -213,55 +297,12 @@ class _KaraokeCanvas(QWidget):
         y: float,
         view_width: float,
         line_height: float,
-        font: QFont,
-        dim_pen: QPen,
+        font: Optional[QFont] = None,
+        dim_pen: Optional[QPen] = None,
     ) -> None:
-        """Render active line with constant-speed syllable clipping sweep."""
-        fm = QFontMetricsF(font)
-        text_width = fm.horizontalAdvance(line_text)
-        x_start = max(10.0, (view_width - text_width) / 2.0)
-        baseline_y = y + fm.ascent() / 2.0
+        """Compatibility wrapper for drawing active line."""
+        self._draw_word_synced_line(painter, line, line_text, y, view_width, line_height, font, dim_pen)
 
-        # 1. Base Layer (Inactive text)
-        painter.setFont(font)
-        painter.setPen(dim_pen)
-        painter.drawText(int(x_start), int(baseline_y), str(line_text))
-
-        # 2. Compute sweep clipping width across syllables
-        current_x = x_start
-        sweep_x = x_start
-
-        for syl in line.syllables:
-            syl_w = fm.horizontalAdvance(syl.text)
-            if self._current_ms <= syl.abs_start_ms:
-                # Not started yet
-                break
-            elif self._current_ms >= syl.abs_end_ms:
-                # Fully finished
-                sweep_x = current_x + syl_w
-            else:
-                # Partially active syllable: linear interpolation
-                dur = max(1, syl.abs_end_ms - syl.abs_start_ms)
-                progress = min(1.0, max(0.0, (self._current_ms - syl.abs_start_ms) / dur))
-                sweep_x = current_x + (syl_w * progress)
-                break
-            current_x += syl_w
-
-        # 3. Active Layer: Clip from line start up to sweep_x using state stack
-        if sweep_x > x_start:
-            painter.save()
-            try:
-                clip_rect = QRect(
-                    int(x_start),
-                    int(y - line_height / 2.0),
-                    int(sweep_x - x_start),
-                    int(line_height),
-                )
-                painter.setClipRect(clip_rect, Qt.ClipOperation.ReplaceClip)
-                painter.setPen(self._highlight_pen)
-                painter.drawText(int(x_start), int(baseline_y), str(line_text))
-            finally:
-                painter.restore()
 
 
 class KaraokePreviewWidget(QWidget):

@@ -300,6 +300,35 @@ class TestMainWindow(unittest.TestCase):
         self.window.cmb_theme.setCurrentText("OLED Dark")
         self.assertIn("#000000", self.window.styleSheet())
 
+    def test_selection_deserializes_lyrics_and_updates_sync_state(self) -> None:
+        from unittest.mock import patch
+        track = TrackItem(
+            file_path="/music/untagged.mp3",
+            title="Song",
+            artist="Artist",
+            duration_ms=180000,
+            sync_state=SyncState.NONE,
+        )
+        self.window._on_track_found(track)
+        album_item = self.window.tree.topLevelItem(0)
+        track_item = album_item.child(0)
+        self.assertEqual(track_item.text(3), "NONE")
+
+        dummy_lyrics = SongLyrics(
+            metadata={},
+            lines=[LyricLine(start_ms=1000, end_ms=2000, syllables=[SyllableSpan(1000, 2000, "Word")])],
+            is_word_synced=True,
+        )
+
+        with patch("gui.app.read_track_lyrics", return_value=dummy_lyrics):
+            self.window.tree.setCurrentItem(track_item)
+            self.window._on_item_selection_changed()
+
+            self.assertEqual(track.sync_state, SyncState.WORD)
+            self.assertEqual(track_item.text(3), "WORD")
+            self.assertIsNotNone(self.window.preview_widget._lyrics)
+            self.assertEqual(len(self.window.preview_widget._lyrics.lines), 1)
+
 
 class TestPaintStability(unittest.TestCase):
     """30-second continuous 60 FPS animation soak test verifying refcount stability."""

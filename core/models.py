@@ -28,6 +28,7 @@ class LyricLine:
 class SongLyrics:
     metadata: Dict[str, str] = field(default_factory=dict)
     lines: List[LyricLine] = field(default_factory=list)
+    is_word_synced: bool = False  # True when per-syllable timing spans are present
 
     def __post_init__(self) -> None:
         self.detect_sub_vocals()
@@ -40,7 +41,9 @@ class SongLyrics:
         # 1. Any line enclosed in parentheses is classified as background vocal
         for line in self.lines:
             text = "".join(s.text for s in line.syllables).strip()
-            if (text.startswith("(") and text.endswith(")")) or (text.startswith("（") and text.endswith("）")):
+            if (text.startswith("(") and text.endswith(")")) or (
+                text.startswith("（") and text.endswith("）")
+            ):
                 line.is_background = True
 
         # 2. Track lead line and classify overlapping lines
@@ -84,7 +87,6 @@ class SongLyrics:
                         line.is_background = False
                         current_lead = line
             else:
-                # No overlap: if this line is not background, it becomes the new lead line
                 if not line.is_background:
                     current_lead = line
 

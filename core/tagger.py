@@ -15,7 +15,7 @@ from mutagen.oggflac import OggFLAC
 from mutagen.oggopus import OggOpus
 from mutagen.oggvorbis import OggVorbis
 
-from core.models import SongLyrics, SyncState, TaggingConfig
+from core.models import LyricLine, SongLyrics, SyllableSpan, SyncState, TaggingConfig
 from core.sync_engine import to_enhanced_lrc, to_plain_text, to_ttml
 
 # Regex to detect word/syllable-level timing tags:
@@ -174,6 +174,268 @@ def detect_sync_state(file_path: str) -> SyncState:
 
     # ── 5. Otherwise ───────────────────────────────────────────────────────
     return SyncState.NONE
+
+
+# Regex for parsing LRC/ELRC files
+_LRC_LINE_RE = re.compile(r"^\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)$")
+_ELRC_WORD_RE = re.compile(r"<(\d{2}):(\d{2})\.(\d{2,3})>([^<]*)")
+# Regex for KRC-style syllable tokens (offset,dur,flag)
+_KRC_HEADER_RE = re.compile(r"^\[(\d+),(\d+)\]")
+_KRC_SYLLABLE_RE = re.compile(r"<(\d+),(\d+),-?\d+>([^<\r\n]*)")
+
+
+def _ms_from_lrc(m: str, s: str, cs_str: str) -> int:
+    """Convert mm:ss.xx (or xxx) to milliseconds."""
+    cs = int(cs_str)
+    millis = cs * 10 if len(cs_str) == 2 else cs
+    return int(m) * 60000 + int(s) * 1000 + millis
+
+
+def _parse_lrc_text(text: str) -> Optional[SongLyrics]:
+    """Parse standard LRC or Enhanced LRC text into SongLyrics.
+
+    Handles both standard ``[mm:ss.xx]Line text`` and Enhanced LRC
+    ``[mm:ss.xx]<mm:ss.xx>word1 <mm:ss.xx>word2`` syllable markers.
+
+    Args:
+        text: Raw LRC/ELRC file content.
+
+    Returns:
+        Populated :class:`~core.models.SongLyrics`, or *None* if no timed lines found.
+    """
+    if not text:
+        return None
+
+    metadata: dict = {}
+    lines: List[LyricLine] = []
+    has_word_sync = False
+
+    for raw_line in text.splitlines():
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+
+        # Metadata tag (non-digit first char after [)
+        if raw_line.startswith("[") and len(raw_line) > 1 and not raw_line[1].isdigit():
+            meta_m = re.match(r"^\[([a-zA-Z]+):(.*)\]$", raw_line)
+            if meta_m:
+                metadata[meta_m.group(1)] = meta_m.group(2).strip()
+            continue
+
+        lm = _LRC_LINE_RE.match(raw_line)
+        if not lm:
+            continue
+
+        start_ms = _ms_from_lrc(lm.group(1), lm.group(2), lm.group(3))
+        body = lm.group(4)
+
+        syllables: List[SyllableSpan] = []
+        word_matches = list(_ELRC_WORD_RE.finditer(body))
+
+        if word_matches:
+            has_word_sync = True
+            for j, wm in enumerate(word_matches):
+                s_start = _ms_from_lrc(wm.group(1), wm.group(2), wm.group(3))
+                s_text = wm.group(4)
+                if j + 1 < len(word_matches):
+                    next_wm = word_matches[j + 1]
+                    s_end = _ms_from_lrc(next_wm.group(1), next_wm.group(2), next_wm.group(3))
+                else:
+                    s_end = s_start + 1000
+                syllables.append(SyllableSpan(abs_start_ms=s_start, abs_end_ms=s_end, text=s_text))
+            end_ms = syllables[-1].abs_end_ms
+        else:
+            body_stripped = body.strip()
+            end_ms = start_ms + 3000
+            syllables.append(SyllableSpan(abs_start_ms=start_ms, abs_end_ms=end_ms, text=body_stripped))
+
+        lines.append(LyricLine(start_ms=start_ms, end_ms=end_ms, syllables=syllables))
+
+    if not lines:
+        return None
+
+    return SongLyrics(metadata=metadata, lines=lines, is_word_synced=has_word_sync)
+
+
+def _parse_krc_text_tagger(krc_text: str) -> Optional[SongLyrics]:
+    """Parse decrypted KRC text (offset,dur format) into SongLyrics.
+
+    Args:
+        krc_text: Decrypted KRC content with UNIX line endings.
+
+    Returns:
+        Populated :class:`~core.models.SongLyrics`, or *None* if no lines parsed.
+    """
+    metadata: dict = {}
+    lines: List[LyricLine] = []
+    _META_RE = re.compile(r"^\[([a-zA-Z]+):(.*)\]$")
+
+    for raw_line in krc_text.split("\n"):
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        meta_match = _META_RE.match(raw_line)
+        if meta_match and not raw_line[1].isdigit():
+            metadata[meta_match.group(1).strip()] = meta_match.group(2).strip()
+            continue
+        header_match = _KRC_HEADER_RE.match(raw_line)
+        if not header_match:
+            continue
+        line_start_ms = int(header_match.group(1))
+        line_dur_ms = int(header_match.group(2))
+        line_end_ms = line_start_ms + line_dur_ms
+        syllables: List[SyllableSpan] = []
+        for syl_match in _KRC_SYLLABLE_RE.finditer(raw_line):
+            rel_off = int(syl_match.group(1))
+            syl_dur = int(syl_match.group(2))
+            text = syl_match.group(3)
+            abs_start = line_start_ms + rel_off
+            abs_end = abs_start + syl_dur
+            syllables.append(SyllableSpan(abs_start_ms=abs_start, abs_end_ms=abs_end, text=text))
+        lines.append(LyricLine(start_ms=line_start_ms, end_ms=line_end_ms, syllables=syllables))
+
+    if not lines:
+        return None
+    return SongLyrics(metadata=metadata, lines=lines, is_word_synced=bool(lines and lines[0].syllables))
+
+
+def read_track_lyrics(file_path: str) -> Optional[SongLyrics]:
+    """Deserialize existing synchronized lyrics for a track from disk.
+
+    Inspection order:
+      1. Sibling sidecars: ``{stem}.lrc``, ``{stem}.elrc``, ``{stem}.ttml``
+         (ELRC / Enhanced LRC preferred over plain LRC).
+      2. Embedded audio tags via Mutagen:
+         - FLAC / OGG (Vorbis): ``LYRICS`` or ``UNSYNCEDLYRICS`` comments.
+         - MP3 (ID3): ``TXXX:LYRICS`` → ``USLT`` → ``SYLT`` frames.
+         - M4A / MP4: ``\\xa9lyr`` atom.
+
+    Content classification:
+      - If text contains ``<offset,duration>`` or ``<mm:ss.xx>`` syllable markers,
+        the result has ``is_word_synced=True``.
+      - If text only contains standard ``[mm:ss.xx]`` line markers,
+        ``is_word_synced=False``.
+
+    Args:
+        file_path: Absolute or relative path to the audio file.
+
+    Returns:
+        Populated :class:`~core.models.SongLyrics` or *None* if no readable lyrics found.
+    """
+    path = pathlib.Path(file_path)
+
+    # ── 1. Sidecar files (ELRC before LRC for word-sync priority) ─────────
+    for ext in (".elrc", ".lrc"):
+        sidecar = path.with_suffix(ext)
+        if sidecar.is_file():
+            try:
+                content = sidecar.read_text(encoding="utf-8", errors="replace")
+                parsed = _parse_lrc_text(content)
+                if parsed and parsed.lines:
+                    return parsed
+            except Exception:
+                pass
+
+    # ── 2. Embedded tags via Mutagen ───────────────────────────────────────
+    if not path.is_file():
+        return None
+
+    try:
+        audio = mutagen.File(file_path, easy=False)
+    except Exception:
+        audio = None
+
+    if audio is None:
+        return None
+
+    tags = getattr(audio, "tags", None)
+
+    # Helper: parse any text candidate
+    def _try_parse(text: str) -> Optional[SongLyrics]:
+        if not text:
+            return None
+        # Try KRC-style syllable tokens first
+        if _KRC_HEADER_RE.search(text) and _KRC_SYLLABLE_RE.search(text):
+            result = _parse_krc_text_tagger(text)
+            if result:
+                return result
+        # Try LRC / Enhanced LRC
+        result = _parse_lrc_text(text)
+        if result:
+            return result
+        return None
+
+    # ID3 tags (MP3)
+    id3_tags = tags if isinstance(tags, ID3) else (audio if isinstance(audio, ID3) else None)
+    if id3_tags is None and hasattr(tags, "getall"):
+        id3_tags = tags
+
+    if id3_tags is not None and hasattr(id3_tags, "getall"):
+        # TXXX:LYRICS (preferred: may contain Enhanced LRC)
+        for frame in id3_tags.getall("TXXX"):
+            desc = getattr(frame, "desc", "")
+            if desc.upper() in ("LYRICS", "UNSYNCEDLYRICS"):
+                text_val = getattr(frame, "text", None)
+                raw = text_val[0] if isinstance(text_val, (list, tuple)) and text_val else (str(text_val) if text_val else "")
+                result = _try_parse(raw)
+                if result:
+                    return result
+
+        # USLT (plain or timestamped)
+        for frame in id3_tags.getall("USLT"):
+            raw = getattr(frame, "text", "")
+            if raw:
+                result = _try_parse(str(raw))
+                if result:
+                    return result
+
+        # SYLT (synchronized text frames)
+        for frame in id3_tags.getall("SYLT"):
+            entries = getattr(frame, "text", [])
+            if entries:
+                parts = []
+                for entry in entries:
+                    if isinstance(entry, (tuple, list)) and len(entry) >= 2:
+                        word, ts = entry[0], entry[1]
+                        ts_ms = int(ts)
+                        m_str = f"{ts_ms // 60000:02d}"
+                        s_str = f"{(ts_ms // 1000) % 60:02d}"
+                        cs_str = f"{(ts_ms % 1000) // 10:02d}"
+                        parts.append(f"[{m_str}:{s_str}.{cs_str}]{word}")
+                synth_lrc = "\n".join(parts)
+                result = _parse_lrc_text(synth_lrc)
+                if result:
+                    return result
+
+    # Vorbis comments (FLAC / OGG)
+    for container in (tags, audio):
+        if container is not None and hasattr(container, "get") and not isinstance(container, ID3):
+            for key in ("LYRICS", "lyrics", "UNSYNCEDLYRICS", "unsyncedlyrics"):
+                try:
+                    val = container.get(key)
+                    if val:
+                        raw = val[0] if isinstance(val, (list, tuple)) else str(val)
+                        result = _try_parse(str(raw))
+                        if result:
+                            return result
+                except (KeyError, ValueError):
+                    pass
+
+    # MP4 / M4A atoms
+    for container in (tags, audio):
+        if container is not None and hasattr(container, "get") and not isinstance(container, (type(None),)):
+            for atom_key in ("\xa9lyr", "©lyr"):
+                try:
+                    lyr = container.get(atom_key)
+                    if lyr:
+                        raw = lyr[0] if isinstance(lyr, (list, tuple)) else str(lyr)
+                        result = _try_parse(str(raw))
+                        if result:
+                            return result
+                except (KeyError, ValueError):
+                    pass
+
+    return None
 
 
 def apply_lyrics(

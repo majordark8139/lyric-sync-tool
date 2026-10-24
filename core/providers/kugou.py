@@ -12,7 +12,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
 from core.models import LyricLine, SongLyrics, SyllableSpan, TaggingConfig
-from core.normalizer import generate_query_ladder
+from core.normalizer import clean_kugou_query, generate_query_ladder
 from core.providers.base import BaseLyricsProvider
 
 # 16-byte cyclic XOR key used by Kugou's KRC container.
@@ -208,12 +208,62 @@ class KugouProvider(BaseLyricsProvider):
         tolerance = config.duration_tolerance_ms if config else _DURATION_TOLERANCE_MS
 
         if config and not config.smart_fallback:
-            ladder = [(artist, title)]
+            ladder: List[tuple] = [(artist, title)]
         else:
             ladder = generate_query_ladder(artist, title)
+            # Append 3 extra clean_kugou_query steps for tracks with brackets/features/remixes
+            # to handle cases like "Save Your Tears (Remix) (With Ariana Grande)"
+            clean_artist = clean_kugou_query(artist)
+            clean_title = clean_kugou_query(title)
+            if clean_title and clean_title != title:
+                # Attempt A: Cleaned artist + cleaned title
+                if (clean_artist, clean_title) not in ladder:
+                    ladder.append((clean_artist, clean_title))
+                # Attempt B: Cleaned title-only (skip artist matching entirely)
+                if ("", clean_title) not in ladder:
+                    ladder.append(("", clean_title))
+            # Attempt C: Cleaned title + duration tolerance (already handled by allow_zero=True at high step_idx)
+            # (covered by raising tolerance at step_idx >= len(ladder)-2)
+
+        def _cand_dur(c: Dict[str, Any]) -> int:
+            return int(c.get("duration", 0))
+
+        def _sort_key(c: Dict[str, Any], allow_z: bool) -> tuple:
+            is_krctype_2 = 0 if c.get("krctype") == 2 else 1
+            score = -int(c.get("score", 0))
+            dur = _cand_dur(c)
+            delta = abs(dur - duration_ms) if dur != 0 else tolerance + 1
+            return (is_krctype_2, score, delta)
+
+        def _try_download(cand: Dict[str, Any]) -> Optional[SongLyrics]:
+            dl_params = urllib.parse.urlencode({
+                "ver": "1",
+                "client": "pc",
+                "id": str(cand.get("id", "")),
+                "accesskey": str(cand.get("accesskey", "")),
+                "fmt": "krc",
+                "charset": "utf8",
+            })
+            dl_url = f"{_DOWNLOAD_URL}?{dl_params}"
+            dl_data = _make_request(dl_url)
+            if not dl_data:
+                return None
+            encoded_content: str = dl_data.get("content", "")
+            if not encoded_content:
+                return None
+            try:
+                krc_text = unpack_krc(encoded_content)
+            except (ValueError, zlib.error, Exception):
+                return None
+            if not _WORD_SYNC_RE.search(krc_text):
+                return None
+            parsed = _parse_krc_text(krc_text)
+            return parsed if (parsed and parsed.lines) else None
 
         for step_idx, (q_artist, q_title) in enumerate(ladder):
             keyword = q_title if not q_artist else f"{q_artist} - {q_title}"
+            # Use expanded tolerance for late-stage ladder steps
+            step_tolerance = tolerance + 2000 if step_idx >= max(3, len(ladder) - 3) else tolerance
             search_params = urllib.parse.urlencode({
                 "ver": "1",
                 "man": "yes",
@@ -222,6 +272,7 @@ class KugouProvider(BaseLyricsProvider):
                 "duration": str(duration_ms),
             })
             search_url = f"{_SEARCH_URL}?{search_params}"
+            print(f"[Kugou] step {step_idx}: keyword={keyword!r}")
             search_data = _make_request(search_url)
             if not search_data:
                 continue
@@ -231,58 +282,22 @@ class KugouProvider(BaseLyricsProvider):
                 continue
 
             allow_zero = (step_idx >= 3)
-
-            def _duration_ms(c: Dict[str, Any]) -> int:
-                """Candidate duration in ms."""
-                return int(c.get("duration", 0))
-
             filtered = [
                 c for c in candidates
-                if (_duration_ms(c) == 0 and allow_zero) or abs(_duration_ms(c) - duration_ms) <= tolerance
+                if (_cand_dur(c) == 0 and allow_zero)
+                or abs(_cand_dur(c) - duration_ms) <= step_tolerance
             ]
             if not filtered:
+                print(f"[Kugou] step {step_idx}: {len(candidates)} raw candidates, 0 after duration filter")
                 continue
 
-            # Sort prioritizing cand.get("krctype") == 2 first, then -cand.get("score"), then smallest duration delta
-            def _sort_key(c: Dict[str, Any]):
-                is_krctype_2 = 0 if c.get("krctype") == 2 else 1
-                score = -int(c.get("score", 0))
-                dur = _duration_ms(c)
-                delta = abs(dur - duration_ms) if dur != 0 else tolerance + 1
-                return (is_krctype_2, score, delta)
+            print(f"[Kugou] step {step_idx}: {len(filtered)} candidates after duration filter")
+            filtered.sort(key=lambda c: _sort_key(c, allow_zero))
 
-            filtered.sort(key=_sort_key)
-
-            # Download and validate candidates in order
             for cand in filtered:
-                dl_params = urllib.parse.urlencode({
-                    "ver": "1",
-                    "client": "pc",
-                    "id": str(cand.get("id", "")),
-                    "accesskey": str(cand.get("accesskey", "")),
-                    "fmt": "krc",
-                    "charset": "utf8",
-                })
-                dl_url = f"{_DOWNLOAD_URL}?{dl_params}"
-                dl_data = _make_request(dl_url)
-                if not dl_data:
-                    continue
-
-                encoded_content: str = dl_data.get("content", "")
-                if not encoded_content:
-                    continue
-
-                try:
-                    krc_text = unpack_krc(encoded_content)
-                except (ValueError, zlib.error, Exception):
-                    continue
-
-                # Validation check: must have syllable tokens
-                if not _WORD_SYNC_RE.search(krc_text):
-                    continue
-
-                parsed = _parse_krc_text(krc_text)
-                if parsed and parsed.lines:
-                    return parsed
+                result = _try_download(cand)
+                if result:
+                    print(f"[Kugou] step {step_idx}: matched — {cand.get('song', '')} / {cand.get('singer', '')}")
+                    return result
 
         return None

@@ -156,6 +156,30 @@ def sanitize_search_query(text: str) -> str:
     return result.strip()
 
 
+
+
+def clean_kugou_query(text: str) -> str:
+    """Strip all brackets, parentheses, quotes, and punctuation for Kugou API queries.
+
+    More aggressive than :func:`sanitize_search_query`; strips entire
+    parenthesized/bracketed groups and all remaining punctuation, leaving only
+    bare words. Use for remix/feature retry ladder steps.
+
+    Args:
+        text: Input string (artist or title).
+
+    Returns:
+        Cleaned query string suitable for Kugou search.
+    """
+    if not text:
+        return ""
+    # Remove bracket groups and their entire contents: (Remix), [feat. X], {live}
+    result = re.sub(r'[\(\[\{][^\)\]\}]*[\)\]\}]', ' ', text)
+    # Remove remaining punctuation characters
+    result = re.sub(r'[!"#$%&\'\(\)\*\+,\-\./:;<=>?@\[\\\]\^_`{|}~]', ' ', result)
+    result = re.sub(r'\s+', ' ', result)
+    return result.strip()
+
 def generate_query_ladder(artist: str, title: str) -> List[Tuple[str, str]]:
     """Generate cascading query candidates in prioritized order with deduplication.
 

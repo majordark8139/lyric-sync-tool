@@ -14,7 +14,7 @@ from mutagen.mp3 import MP3
 
 from core.models import LyricLine, SongLyrics, SyllableSpan, SyncState, TaggingConfig
 from core.sync_engine import to_enhanced_lrc, to_plain_text, to_ttml
-from core.tagger import apply_lyrics, detect_sync_state, strip_lyrics
+from core.tagger import apply_lyrics, detect_sync_state, read_track_lyrics, strip_lyrics
 
 
 def _create_minimal_flac(path: str) -> None:
@@ -551,6 +551,86 @@ class TestApplyLyrics(unittest.TestCase):
         res = apply_lyrics(track, self.song, config=config)
         self.assertFalse(ttml_path.exists())
         self.assertIn(str(ttml_path), res["sidecars_purged"])
+
+
+class TestReadTrackLyrics(unittest.TestCase):
+    """Tests for read_track_lyrics deserializing sidecars and embedded metadata tags."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.dir_path = pathlib.Path(self.temp_dir.name)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_read_from_lrc_sidecar(self) -> None:
+        track = str(self.dir_path / "song.mp3")
+        _create_minimal_mp3(track)
+        lrc_path = self.dir_path / "song.lrc"
+        lrc_path.write_text("[00:01.00]First line\n[00:02.50]Second line\n", encoding="utf-8")
+
+        lyrics = read_track_lyrics(track)
+        self.assertIsNotNone(lyrics)
+        self.assertEqual(len(lyrics.lines), 2)
+        self.assertEqual(lyrics.lines[0].start_ms, 1000)
+        self.assertFalse(lyrics.is_word_synced)
+
+    def test_read_from_elrc_sidecar(self) -> None:
+        track = str(self.dir_path / "song.mp3")
+        _create_minimal_mp3(track)
+        elrc_path = self.dir_path / "song.elrc"
+        elrc_path.write_text("[00:01.00]<00:01.00>Hel<00:01.50>lo <00:02.00>World\n", encoding="utf-8")
+
+        lyrics = read_track_lyrics(track)
+        self.assertIsNotNone(lyrics)
+        self.assertEqual(len(lyrics.lines), 1)
+        self.assertEqual(len(lyrics.lines[0].syllables), 3)
+        self.assertTrue(lyrics.is_word_synced)
+
+    def test_read_from_flac_vorbis(self) -> None:
+        track = str(self.dir_path / "song.flac")
+        _create_minimal_flac(track)
+        flac = FLAC(track)
+        flac["LYRICS"] = ["[00:01.00]<00:01.00>Flac <00:01.50>Audio\n"]
+        flac.save()
+
+        lyrics = read_track_lyrics(track)
+        self.assertIsNotNone(lyrics)
+        self.assertEqual(len(lyrics.lines), 1)
+        self.assertTrue(lyrics.is_word_synced)
+
+    def test_read_from_mp3_txxx(self) -> None:
+        track = str(self.dir_path / "song.mp3")
+        _create_minimal_mp3(track)
+        mp3 = MP3(track)
+        if mp3.tags is None:
+            mp3.add_tags()
+        mp3.tags.add(TXXX(encoding=3, desc="LYRICS", text="[00:01.00]<00:01.00>MP3 <00:01.50>Lyrics\n"))
+        mp3.save(v2_version=3)
+
+        lyrics = read_track_lyrics(track)
+        self.assertIsNotNone(lyrics)
+        self.assertEqual(len(lyrics.lines), 1)
+        self.assertTrue(lyrics.is_word_synced)
+
+    def test_read_from_mp3_uslt(self) -> None:
+        track = str(self.dir_path / "song.mp3")
+        _create_minimal_mp3(track)
+        mp3 = MP3(track)
+        if mp3.tags is None:
+            mp3.add_tags()
+        mp3.tags.add(USLT(encoding=3, lang="eng", desc="", text="[00:01.00]Line In USLT\n[00:03.00]Second Line\n"))
+        mp3.save(v2_version=3)
+
+        lyrics = read_track_lyrics(track)
+        self.assertIsNotNone(lyrics)
+        self.assertEqual(len(lyrics.lines), 2)
+        self.assertFalse(lyrics.is_word_synced)
+
+    def test_read_returns_none_when_no_lyrics(self) -> None:
+        track = str(self.dir_path / "empty.mp3")
+        _create_minimal_mp3(track)
+        self.assertIsNone(read_track_lyrics(track))
 
 
 if __name__ == "__main__":
