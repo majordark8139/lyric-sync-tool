@@ -180,10 +180,42 @@ def clean_kugou_query(text: str) -> str:
     result = re.sub(r'\s+', ' ', result)
     return result.strip()
 
+
+def extract_primary_artist(artist: str) -> str:
+    """Extract primary artist by splitting on common multi-artist delimiters.
+
+    Splits on common multi-artist delimiters: ';', '/', '\\', ' feat ', ' feat. ',
+    ' ft ', ' ft. ', ' with ', ' vs. ', ' vs ', and ' & '. Takes the first token,
+    strips whitespace, and returns it.
+
+    Args:
+        artist: Full artist string (e.g., from Vorbis tag or ID3).
+
+    Returns:
+        First artist token stripped of leading/trailing whitespace.
+    """
+    if not artist:
+        return ""
+    pattern = re.compile(
+        r";|/|\\|\s+(?:feat\.?|ft\.?|with|vs\.?)\s+|\s+&\s+",
+        re.IGNORECASE,
+    )
+    for part in pattern.split(artist):
+        clean = part.strip()
+        if clean:
+            return clean
+    return artist.strip()
+
+
 def generate_query_ladder(artist: str, title: str) -> List[Tuple[str, str]]:
     """Generate cascading query candidates in prioritized order with deduplication.
 
     Prioritized query order:
+      0. Primary artist multi-artist rungs (when artist has multi-artist delimiters):
+         - (primary_artist, strip_features(title))
+         - (primary_artist, title)
+         - (primary_artist, clean_kugou_query(strip_features(title)))
+         - (artist.replace(';', ',').replace('  ', ' '), strip_features(title))
       1. Exact raw tags: (artist, title)
       2. Punctuation-sanitized full title: (sanitize_search_query(artist), sanitize_search_query(title))
       3. Feature-stripped: (artist, strip_features(title))
@@ -206,6 +238,21 @@ def generate_query_ladder(artist: str, title: str) -> List[Tuple[str, str]]:
         if cand[1] and cand not in ladder:
             ladder.append(cand)
 
+    primary_artist = extract_primary_artist(artist)
+    feat_stripped_title = strip_features(title)
+
+    # Multi-artist priority rungs: if artist has delimiters, prioritize primary artist
+    if primary_artist and primary_artist != artist.strip():
+        # 1. (primary_artist, strip_features(title))
+        _add(primary_artist, feat_stripped_title)
+        # 2. (primary_artist, title)
+        _add(primary_artist, title)
+        # 3. (primary_artist, clean_kugou_query(strip_features(title)))
+        _add(primary_artist, clean_kugou_query(feat_stripped_title))
+        # 4. (artist.replace(';', ',').replace('  ', ' '), strip_features(title))
+        comma_artist = artist.replace(";", ",").replace("  ", " ").strip()
+        _add(comma_artist, feat_stripped_title)
+
     # 1. Exact raw tags
     _add(artist, title)
 
@@ -213,25 +260,24 @@ def generate_query_ladder(artist: str, title: str) -> List[Tuple[str, str]]:
     _add(sanitize_search_query(artist), sanitize_search_query(title))
 
     # Feature stripping and collaborators
-    feat_stripped_title = strip_features(title)
-    primary_artist, featured_artists = extract_collaborators(artist, title)
+    collab_lead, featured_artists = extract_collaborators(artist, title)
 
     # 3. Feature-stripped
     _add(artist, feat_stripped_title)
-    if primary_artist and primary_artist != artist:
-        _add(primary_artist, feat_stripped_title)
+    if collab_lead and collab_lead != artist:
+        _add(collab_lead, feat_stripped_title)
 
     # 4. Sanitized feature-stripped
     _add(sanitize_search_query(artist), sanitize_search_query(feat_stripped_title))
-    if primary_artist and primary_artist != artist:
-        _add(sanitize_search_query(primary_artist), sanitize_search_query(feat_stripped_title))
+    if collab_lead and collab_lead != artist:
+        _add(sanitize_search_query(collab_lead), sanitize_search_query(feat_stripped_title))
 
     # Collaborators in artist & reissue stripped
     for feat in featured_artists:
-        _add(f"{primary_artist} {feat}", feat_stripped_title)
+        _add(f"{collab_lead} {feat}", feat_stripped_title)
     clean_title = strip_reissue_and_bonus(feat_stripped_title)
-    if primary_artist:
-        _add(primary_artist, clean_title)
+    if collab_lead:
+        _add(collab_lead, clean_title)
 
     # 5. Title-only full sanitized
     _add("", sanitize_search_query(title))

@@ -4,6 +4,7 @@ import unittest
 
 from core.normalizer import (
     extract_collaborators,
+    extract_primary_artist,
     generate_query_ladder,
     normalize_punctuation,
     strip_features,
@@ -142,6 +143,27 @@ class TestNormalizerAndLadder(unittest.TestCase):
         expected = "Artist Song Title Remix Mix"
         self.assertEqual(sanitize_search_query(raw), expected)
         self.assertEqual(sanitize_search_query(""), "")
+
+    def test_extract_primary_artist(self) -> None:
+        """Verify extraction of lead primary artist across multi-artist delimiters."""
+        self.assertEqual(extract_primary_artist("Don Toliver; Kali Uchis"), "Don Toliver")
+        self.assertEqual(extract_primary_artist("Lana Del Rey; The Weeknd"), "Lana Del Rey")
+        self.assertEqual(extract_primary_artist("A / B \\ C"), "A")
+        self.assertEqual(extract_primary_artist("Don Toliver; Justin Bieber; Future"), "Don Toliver")
+        self.assertEqual(extract_primary_artist("The Weeknd feat. Daft Punk"), "The Weeknd")
+        self.assertEqual(extract_primary_artist("Artist1 & Artist2"), "Artist1")
+        self.assertEqual(extract_primary_artist("Solo Artist"), "Solo Artist")
+        self.assertEqual(extract_primary_artist(""), "")
+
+    def test_generate_query_ladder(self) -> None:
+        """Verify generate_query_ladder prioritizes primary artist on multi-artist tracks."""
+        ladder_1 = generate_query_ladder("Don Toliver; Kali Uchis", "4 Me (feat. Kali Uchis)")
+        self.assertIn(("Don Toliver", "4 Me"), ladder_1)
+        self.assertEqual(ladder_1[0], ("Don Toliver", "4 Me"))
+
+        ladder_2 = generate_query_ladder("Lana Del Rey; The Weeknd", "Lust for Life")
+        self.assertIn(("Lana Del Rey", "Lust for Life"), ladder_2)
+        self.assertEqual(ladder_2[0], ("Lana Del Rey", "Lust for Life"))
 
 
 class TestKugouLadderSearch(unittest.TestCase):
