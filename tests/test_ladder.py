@@ -135,6 +135,14 @@ class TestNormalizerAndLadder(unittest.TestCase):
         self.assertIn("Daft Punk", featured)
         self.assertIn("Future", featured)
 
+    def test_sanitize_search_query(self) -> None:
+        """Verify replacement of (), [], {}, -, _, /, \\ with spaces, space collapsing, and trimming."""
+        from core.normalizer import sanitize_search_query
+        raw = " (Artist) - [Song_Title] {Remix} / Mix\\ "
+        expected = "Artist Song Title Remix Mix"
+        self.assertEqual(sanitize_search_query(raw), expected)
+        self.assertEqual(sanitize_search_query(""), "")
+
 
 class TestKugouLadderSearch(unittest.TestCase):
     """Test KugouProvider search ladder logic, candidate ranking, and fallback."""
@@ -218,8 +226,8 @@ class TestKugouLadderSearch(unittest.TestCase):
         # Check that empty artist candidates exist
         empty_artist_cands = [cand for cand in ladder if cand[0] == ""]
         self.assertTrue(len(empty_artist_cands) >= 1)
-        self.assertIn(("", "Yellow (Live) - Bonus Track"), empty_artist_cands)
-        self.assertIn(("", "Yellow (Live)"), empty_artist_cands)
+        self.assertIn(("", "Yellow Live Bonus Track"), empty_artist_cands)
+        self.assertIn(("", "Yellow Live"), empty_artist_cands)
         # The last candidates in the ladder should be title-only
         self.assertEqual(ladder[-1][0], "")
 

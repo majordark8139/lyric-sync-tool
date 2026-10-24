@@ -25,8 +25,8 @@ QSplitter::handle:vertical {
     height: 3px;
 }
 
-/* ── Table & Headers ── */
-QTableWidget {
+/* ── Table, Tree & Headers ── */
+QTableWidget, QTreeWidget {
     background-color: #ffffff;
     alternate-background-color: #fafafa;
     border: 1px solid #d0d0d0;
@@ -34,10 +34,10 @@ QTableWidget {
     selection-background-color: #2b79c2;
     selection-color: #ffffff;
 }
-QTableWidget::item {
+QTableWidget::item, QTreeWidget::item {
     padding: 2px 4px;
 }
-QTableWidget::item:selected {
+QTableWidget::item:selected, QTreeWidget::item:selected {
     background-color: #2b79c2;
     color: #ffffff;
 }
@@ -236,8 +236,8 @@ QSplitter::handle:vertical {
     height: 3px;
 }
 
-/* ── Table & Headers ── */
-QTableWidget {
+/* ── Table, Tree & Headers ── */
+QTableWidget, QTreeWidget {
     background-color: #1e1f22;
     alternate-background-color: #24262a;
     border: 1px solid #36393f;
@@ -245,10 +245,10 @@ QTableWidget {
     selection-background-color: #38608e;
     selection-color: #ffffff;
 }
-QTableWidget::item {
+QTableWidget::item, QTreeWidget::item {
     padding: 2px 4px;
 }
-QTableWidget::item:selected {
+QTableWidget::item:selected, QTreeWidget::item:selected {
     background-color: #38608e;
     color: #ffffff;
 }
@@ -453,8 +453,8 @@ QSplitter::handle:vertical {
     height: 2px;
 }
 
-/* ── Table & Headers ── */
-QTableWidget {
+/* ── Table, Tree & Headers ── */
+QTableWidget, QTreeWidget {
     background-color: #000000;
     alternate-background-color: #080808;
     border: 1px solid #222222;
@@ -462,10 +462,10 @@ QTableWidget {
     selection-background-color: #1b4974;
     selection-color: #ffffff;
 }
-QTableWidget::item {
+QTableWidget::item, QTreeWidget::item {
     padding: 2px 4px;
 }
-QTableWidget::item:selected {
+QTableWidget::item:selected, QTreeWidget::item:selected {
     background-color: #1b4974;
     color: #ffffff;
 }

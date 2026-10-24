@@ -7,6 +7,7 @@ import unittest
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
 from core.models import LyricLine, SongLyrics, SyllableSpan, SyncState, TaggingConfig, TrackItem
@@ -329,6 +330,230 @@ class TestPaintStability(unittest.TestCase):
             rc_start - 5,
             f"None refcount leaked: rc_start={rc_start}, rc_end={rc_end}, diff={rc_end - rc_start}",
         )
+
+
+class TestAlbumGroupedTree(unittest.TestCase):
+    def setUp(self) -> None:
+        self.window = MainWindow()
+
+    def tearDown(self) -> None:
+        if self.window is not None:
+            self.window.deleteLater()
+            self.window = None
+        app.sendPostedEvents()
+        app.processEvents()
+
+    def test_album_grouping_and_node_text(self) -> None:
+        t1 = TrackItem(
+            file_path="/m/1.mp3",
+            title="Song 1",
+            artist="Artist A",
+            duration_ms=120000,
+            sync_state=SyncState.NONE,
+            album="Greatest Hits",
+            album_artist="Artist A",
+        )
+        t2 = TrackItem(
+            file_path="/m/2.mp3",
+            title="Song 2",
+            artist="Artist A",
+            duration_ms=150000,
+            sync_state=SyncState.WORD,
+            album="Greatest Hits",
+            album_artist="Artist A",
+        )
+        t3 = TrackItem(
+            file_path="/m/3.mp3",
+            title="Song 3",
+            artist="Artist B",
+            duration_ms=180000,
+            sync_state=SyncState.LINE,
+            album="Different Album",
+            album_artist="Artist B",
+        )
+
+        self.window._on_track_found(t1)
+        self.window._on_track_found(t2)
+        self.window._on_track_found(t3)
+
+        # 2 distinct album nodes
+        self.assertEqual(self.window.tree.topLevelItemCount(), 2)
+
+        album1 = self.window.tree.topLevelItem(0)
+        self.assertEqual(album1.text(0), "Artist A - Greatest Hits (2 tracks)")
+        self.assertEqual(album1.childCount(), 2)
+        self.assertEqual(album1.child(0).text(0), "Song 1")
+        self.assertEqual(album1.child(1).text(0), "Song 2")
+
+        album2 = self.window.tree.topLevelItem(1)
+        self.assertEqual(album2.text(0), "Artist B - Different Album (1 tracks)")
+        self.assertEqual(album2.childCount(), 1)
+
+    def test_album_checkbox_cascades_to_children(self) -> None:
+        t1 = TrackItem(file_path="/m/1.mp3", title="Song 1", artist="Artist", duration_ms=100, sync_state=SyncState.NONE, album="Alb")
+        t2 = TrackItem(file_path="/m/2.mp3", title="Song 2", artist="Artist", duration_ms=100, sync_state=SyncState.NONE, album="Alb")
+        self.window._on_track_found(t1)
+        self.window._on_track_found(t2)
+
+        album = self.window.tree.topLevelItem(0)
+        self.assertEqual(album.checkState(0), Qt.CheckState.Checked)
+        self.assertEqual(album.child(0).checkState(0), Qt.CheckState.Checked)
+        self.assertEqual(album.child(1).checkState(0), Qt.CheckState.Checked)
+
+        # Uncheck album node -> children become unchecked
+        album.setCheckState(0, Qt.CheckState.Unchecked)
+        self.assertEqual(album.child(0).checkState(0), Qt.CheckState.Unchecked)
+        self.assertEqual(album.child(1).checkState(0), Qt.CheckState.Unchecked)
+
+        # Re-check child 0 -> album becomes partially checked
+        album.child(0).setCheckState(0, Qt.CheckState.Checked)
+        self.assertEqual(album.checkState(0), Qt.CheckState.PartiallyChecked)
+
+    def test_expand_collapse_controls(self) -> None:
+        t = TrackItem(file_path="/m/1.mp3", title="Song", artist="Artist", duration_ms=100, sync_state=SyncState.NONE, album="Alb")
+        self.window._on_track_found(t)
+        album = self.window.tree.topLevelItem(0)
+
+        self.window._collapse_all()
+        self.assertFalse(album.isExpanded())
+
+        self.window._expand_all()
+        self.assertTrue(album.isExpanded())
+
+
+class TestTransportControlsAndShortcuts(unittest.TestCase):
+    def setUp(self) -> None:
+        self.widget = KaraokePreviewWidget()
+
+    def tearDown(self) -> None:
+        if self.widget is not None:
+            self.widget.deleteLater()
+            self.widget = None
+        app.sendPostedEvents()
+        app.processEvents()
+
+    def test_transport_buttons_exist(self) -> None:
+        self.assertIsNotNone(self.widget.btn_prev)
+        self.assertIsNotNone(self.widget.btn_play_pause)
+        self.assertIsNotNone(self.widget.btn_stop)
+        self.assertIsNotNone(self.widget.btn_next)
+
+    def test_stop_resets_seek_and_pauses(self) -> None:
+        lyrics = _make_sample_lyrics()
+        self.widget.set_lyrics(lyrics, total_duration_ms=5000)
+        self.widget.seek(2500)
+        self.widget.play()
+        self.assertTrue(self.widget._is_playing)
+        self.assertEqual(self.widget._current_ms, 2500)
+
+        self.widget.stop()
+        self.assertFalse(self.widget._is_playing)
+        self.assertEqual(self.widget._current_ms, 0)
+        self.assertEqual(self.widget.btn_play_pause.text(), "▶ Play")
+
+    def test_keyboard_shortcuts(self) -> None:
+        lyrics = _make_sample_lyrics()
+        self.widget.set_lyrics(lyrics, total_duration_ms=10000)
+        self.widget.seek(2000)
+
+        # Space toggles play/pause
+        event_space = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier)
+        self.widget.keyPressEvent(event_space)
+        self.assertTrue(self.widget._is_playing)
+
+        self.widget.keyPressEvent(event_space)
+        self.assertFalse(self.widget._is_playing)
+
+        # Right arrow seeks +5000ms
+        event_right = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier)
+        self.widget.keyPressEvent(event_right)
+        self.assertEqual(self.widget._current_ms, 7000)
+
+        # Left arrow seeks -5000ms
+        event_left = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Left, Qt.KeyboardModifier.NoModifier)
+        self.widget.keyPressEvent(event_left)
+        self.assertEqual(self.widget._current_ms, 2000)
+
+
+class TestSubVocals(unittest.TestCase):
+    def test_sub_vocal_detection_during_overlap(self) -> None:
+        song = SongLyrics(
+            lines=[
+                LyricLine(start_ms=1000, end_ms=3000, syllables=[SyllableSpan(1000, 3000, "Lead Vocal")]),
+                LyricLine(start_ms=2000, end_ms=3500, syllables=[SyllableSpan(2000, 3500, "(Sub Vocal)")]),
+                LyricLine(start_ms=4000, end_ms=6000, syllables=[SyllableSpan(4000, 6000, "Next Line")]),
+            ]
+        )
+        # Line 0 is lead
+        self.assertFalse(song.lines[0].is_background)
+        # Line 1 overlaps with Line 0 (start 2000 < end 3000) -> is_background = True
+        self.assertTrue(song.lines[1].is_background)
+        # Line 2 does not overlap (start 4000 >= end 3500) -> is_background = False
+        self.assertFalse(song.lines[2].is_background)
+
+    def test_sub_vocal_rendering_does_not_crash(self) -> None:
+        from PySide6.QtGui import QPixmap
+        song = SongLyrics(
+            lines=[
+                LyricLine(start_ms=1000, end_ms=3000, syllables=[SyllableSpan(1000, 3000, "Lead Vocal")]),
+                LyricLine(start_ms=1500, end_ms=3200, syllables=[SyllableSpan(1500, 3200, "(Harmonies)")]),
+            ]
+        )
+        widget = KaraokePreviewWidget()
+        widget.set_lyrics(song, total_duration_ms=5000)
+        widget.seek(2000)
+
+        pm = QPixmap(500, 300)
+        widget.canvas.render(pm)
+        widget.deleteLater()
+
+
+class TestManualSearchDialog(unittest.TestCase):
+    def test_manual_search_and_apply(self) -> None:
+        from unittest.mock import patch
+        from tests.test_core import _make_krc_payload
+        from gui.manual_search_dialog import ManualSearchDialog
+
+        valid_krc = (
+            "[ti:Test Title]\n[ar:Test Artist]\n"
+            "[1000,2000]<0,500,-1>Hel<500,500,-1>lo\n"
+        )
+        krc_payload = _make_krc_payload(valid_krc)
+
+        def mock_request(url: str):
+            if "search" in url:
+                return {
+                    "candidates": [
+                        {"id": "101", "accesskey": "acc1", "song": "Test Title", "singer": "Test Artist", "duration": 180000, "krctype": 2}
+                    ]
+                }
+            elif "download" in url:
+                return {"content": krc_payload}
+            return None
+
+        with patch("gui.manual_search_dialog._make_request", side_effect=mock_request):
+            dlg = ManualSearchDialog(title="Test Title", artist="Test Artist", duration_ms=180000)
+            self.assertEqual(dlg.table_results.rowCount(), 1)
+            self.assertEqual(dlg.table_results.item(0, 0).text(), "Test Title")
+            self.assertEqual(dlg.table_results.item(0, 3).text(), "WORD")
+
+            # Select and apply
+            dlg.table_results.selectRow(0)
+            dlg._on_apply_clicked()
+
+            lyrics = dlg.get_selected_lyrics()
+            self.assertIsNotNone(lyrics)
+            self.assertEqual(len(lyrics.lines), 1)
+            dlg.deleteLater()
+
+
+class TestBatchWorkerCancellation(unittest.TestCase):
+    def test_worker_cancel_flag(self) -> None:
+        from core.batch_worker import BatchTaggerWorker
+        worker = BatchTaggerWorker([], TaggingConfig())
+        self.assertFalse(worker._is_cancelled)
+        worker.cancel()
+        self.assertTrue(worker._is_cancelled)
 
 
 if __name__ == "__main__":

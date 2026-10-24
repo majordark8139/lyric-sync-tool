@@ -88,6 +88,8 @@ class ScannerWorker(QThread):
 
                 title = _extract_tag_string(audio, ["title", "TIT2", "\xa9nam", "©nam"], default=pathlib.Path(fname).stem)
                 artist = _extract_tag_string(audio, ["artist", "TPE1", "\xa9ART", "©ART"], default="Unknown Artist")
+                album = _extract_tag_string(audio, ["album", "TALB", "\xa9alb", "©alb"], default="Unknown Album")
+                album_artist = _extract_tag_string(audio, ["albumartist", "album_artist", "TPE2", "aART"], default="")
 
                 duration_ms = 0
                 if audio and hasattr(audio, "info") and hasattr(audio.info, "length"):
@@ -102,6 +104,8 @@ class ScannerWorker(QThread):
                     duration_ms=duration_ms,
                     sync_state=sync_state,
                     matched_lyrics=None,
+                    album=album or "Unknown Album",
+                    album_artist=album_artist,
                 )
 
                 count += 1
@@ -128,12 +132,18 @@ class BatchTaggerWorker(QThread):
         self._tracks = tracks
         self._config = config
         self._provider = provider or KugouProvider()
+        self._is_cancelled: bool = False
+
+    def cancel(self) -> None:
+        """Cancel ongoing batch tagging."""
+        self._is_cancelled = True
+        self.requestInterruption()
 
     def run(self) -> None:
         total = len(self._tracks)
 
         for idx, track in enumerate(self._tracks):
-            if self.isInterruptionRequested():
+            if self.isInterruptionRequested() or self._is_cancelled:
                 break
 
             self.track_progress.emit(idx, "Searching...", track)

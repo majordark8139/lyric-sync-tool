@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QRadioButton,
     QSpinBox,
     QTabWidget,
@@ -17,6 +18,15 @@ from PySide6.QtWidgets import (
 )
 
 from core.models import TaggingConfig
+
+_SUB_LABEL_STYLE = "font-size: 10px; color: #8b949e; margin-bottom: 6px;"
+
+
+def _make_sub_label(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setStyleSheet(_SUB_LABEL_STYLE)
+    lbl.setWordWrap(True)
+    return lbl
 
 
 class TaggingSettingsDialog(QDialog):
@@ -27,8 +37,8 @@ class TaggingSettingsDialog(QDialog):
     def __init__(self, current_config: TaggingConfig, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Tagging & Synchronization Settings")
-        self.setMinimumSize(520, 420)
-        self.resize(520, 420)
+        self.setMinimumSize(540, 480)
+        self.resize(540, 480)
         self._config = current_config
         self._init_ui()
         self._load_config(self._config)
@@ -47,12 +57,12 @@ class TaggingSettingsDialog(QDialog):
         tab_sidecars = QWidget()
         sidecars_layout = QVBoxLayout(tab_sidecars)
         sidecars_layout.setContentsMargins(14, 14, 14, 14)
-        sidecars_layout.setSpacing(10)
+        sidecars_layout.setSpacing(8)
 
         # Group 1: Sidecar Files
         grp_sidecars = QGroupBox("Sidecar Files")
         grp_sidecars_layout = QVBoxLayout(grp_sidecars)
-        grp_sidecars_layout.setSpacing(6)
+        grp_sidecars_layout.setSpacing(4)
 
         self.chk_write_lrc = QCheckBox("Write Enhanced LRC file")
         self.cb_write_lrc = self.chk_write_lrc
@@ -78,22 +88,32 @@ class TaggingSettingsDialog(QDialog):
         ext_layout.addStretch()
         grp_sidecars_layout.addLayout(ext_layout)
 
+        grp_sidecars_layout.addWidget(
+            _make_sub_label("Saves word-by-word timing sidecars (.lrc / .elrc) in your music folder for players like foobar2000 or Namida.")
+        )
+
         self.chk_write_lrc.toggled.connect(self._toggle_lrc_extensions)
 
         self.chk_write_ttml = QCheckBox("Write Apple TTML XML (.ttml)")
         self.cb_write_ttml = self.chk_write_ttml
         grp_sidecars_layout.addWidget(self.chk_write_ttml)
+        grp_sidecars_layout.addWidget(
+            _make_sub_label("Creates Apple Music-style XML lyric files. Leave unchecked if you only want standard .lrc files.")
+        )
 
         sidecars_layout.addWidget(grp_sidecars)
 
         # Group 2: Cleanup & Overwrite
         grp_cleanup = QGroupBox("Cleanup && Overwrite")
         grp_cleanup_layout = QVBoxLayout(grp_cleanup)
-        grp_cleanup_layout.setSpacing(6)
+        grp_cleanup_layout.setSpacing(4)
 
         self.chk_purge_stale = QCheckBox("Purge stale line-synced sidecars upon word-sync match")
         self.cb_purge_stale = self.chk_purge_stale
         grp_cleanup_layout.addWidget(self.chk_purge_stale)
+        grp_cleanup_layout.addWidget(
+            _make_sub_label("Automatically deletes older line-synced lyric files once new high-precision word-synced lyrics are saved.")
+        )
 
         backup_layout = QHBoxLayout()
         backup_layout.setContentsMargins(20, 0, 0, 0)
@@ -102,11 +122,21 @@ class TaggingSettingsDialog(QDialog):
         backup_layout.addWidget(self.chk_backup_stale)
         grp_cleanup_layout.addLayout(backup_layout)
 
+        backup_sub_layout = QHBoxLayout()
+        backup_sub_layout.setContentsMargins(20, 0, 0, 0)
+        backup_sub_layout.addWidget(
+            _make_sub_label("Keeps a .bak safety backup before removing any replaced sidecars.")
+        )
+        grp_cleanup_layout.addLayout(backup_sub_layout)
+
         self.chk_purge_stale.toggled.connect(self.chk_backup_stale.setEnabled)
 
         self.chk_overwrite_word = QCheckBox("Force overwrite existing true word-synced lyrics")
         self.cb_overwrite_word = self.chk_overwrite_word
         grp_cleanup_layout.addWidget(self.chk_overwrite_word)
+        grp_cleanup_layout.addWidget(
+            _make_sub_label("Re-downloads and replaces lyrics even if the track already has word sync.")
+        )
 
         sidecars_layout.addWidget(grp_cleanup)
         sidecars_layout.addStretch()
@@ -128,6 +158,7 @@ class TaggingSettingsDialog(QDialog):
         self.chk_smart_fallback = QCheckBox("Enable Smart Fallback (Cascading Query Ladder)")
         self.cb_smart_fallback = self.chk_smart_fallback
         grp_search_form.addRow(self.chk_smart_fallback)
+        grp_search_form.addRow(_make_sub_label("Automatically tests variations (stripping features, bonus tags, or searching title-only) if the exact match fails."))
 
         self.spin_tolerance = QSpinBox()
         self.spin_tolerance.setRange(500, 10000)
@@ -136,6 +167,7 @@ class TaggingSettingsDialog(QDialog):
         self.spin_tolerance.setSuffix(" ms")
         self.sb_tolerance = self.spin_tolerance
         grp_search_form.addRow("Duration tolerance:", self.spin_tolerance)
+        grp_search_form.addRow(_make_sub_label("Maximum allowed duration difference (in ms) between your audio file and online lyrics to avoid incorrect versions."))
 
         search_layout.addWidget(grp_search)
         search_layout.addStretch()
@@ -157,6 +189,9 @@ class TaggingSettingsDialog(QDialog):
         self.chk_embed_metadata = QCheckBox("Master embed metadata into audio files")
         self.cb_embed_metadata = self.chk_embed_metadata
         grp_embed_layout.addWidget(self.chk_embed_metadata)
+        grp_embed_layout.addWidget(
+            _make_sub_label("Writes lyrics directly inside the audio file so they stay attached when moving songs to other devices.")
+        )
 
         sub_embed_layout = QVBoxLayout()
         sub_embed_layout.setContentsMargins(20, 0, 0, 0)

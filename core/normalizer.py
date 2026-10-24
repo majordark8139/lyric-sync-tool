@@ -140,17 +140,33 @@ def extract_collaborators(artist: str, title: str) -> Tuple[str, List[str]]:
     return lead_artist, featured
 
 
+def sanitize_search_query(text: str) -> str:
+    """Replace punctuation characters (), [], {}, -, _, /, \\ with single spaces, collapse spaces, and trim ends.
+
+    Args:
+        text: Input query string.
+
+    Returns:
+        Punctuation-sanitized query string.
+    """
+    if not text:
+        return ""
+    result = re.sub(r"[()[\]{}\-_/\\]", " ", text)
+    result = re.sub(r"\s+", " ", result)
+    return result.strip()
+
+
 def generate_query_ladder(artist: str, title: str) -> List[Tuple[str, str]]:
     """Generate cascading query candidates in prioritized order with deduplication.
 
     Prioritized query order:
-      1. Raw: (artist, title)
-      2. Cleaned Punctuation: (norm_artist, norm_title)
-      3. Feature Stripped from Title: (artist, strip_features(norm_title))
-      4. Feature in Artist: (primary_artist + " " + featured_artist, strip_features(norm_title))
-      5. Reissue / Bonus Stripped: (primary_artist, strip_reissue_and_bonus(strip_features(norm_title)))
-      6. Title-Only Fallbacks: ("", strip_features(norm_title)) and
-         ("", strip_reissue_and_bonus(strip_features(norm_title)))
+      1. Exact raw tags: (artist, title)
+      2. Punctuation-sanitized full title: (sanitize_search_query(artist), sanitize_search_query(title))
+      3. Feature-stripped: (artist, strip_features(title))
+      4. Sanitized feature-stripped: (sanitize_search_query(artist), sanitize_search_query(strip_features(title)))
+      5. Collaborators & Reissue variants (preserves collaborator search and bonus tracks)
+      6. Title-only full sanitized: ("", sanitize_search_query(title))
+      7. Title-only feature-stripped: ("", sanitize_search_query(strip_features(title)))
 
     Args:
         artist: Artist string.
@@ -166,33 +182,39 @@ def generate_query_ladder(artist: str, title: str) -> List[Tuple[str, str]]:
         if cand[1] and cand not in ladder:
             ladder.append(cand)
 
-    # 1. Raw
+    # 1. Exact raw tags
     _add(artist, title)
 
-    # 2. Cleaned Punctuation
-    norm_artist = normalize_punctuation(artist)
-    norm_title = normalize_punctuation(title)
-    _add(norm_artist, norm_title)
+    # 2. Punctuation-sanitized full title
+    _add(sanitize_search_query(artist), sanitize_search_query(title))
 
-    # Extract collaborators and clean feature title
-    primary_artist, featured_artists = extract_collaborators(norm_artist, norm_title)
-    feat_stripped_title = strip_features(norm_title)
+    # Feature stripping and collaborators
+    feat_stripped_title = strip_features(title)
+    primary_artist, featured_artists = extract_collaborators(artist, title)
 
-    # 3. Feature Stripped from Title
+    # 3. Feature-stripped
     _add(artist, feat_stripped_title)
-    if primary_artist != artist:
+    if primary_artist and primary_artist != artist:
         _add(primary_artist, feat_stripped_title)
 
-    # 4. Feature in Artist
+    # 4. Sanitized feature-stripped
+    _add(sanitize_search_query(artist), sanitize_search_query(feat_stripped_title))
+    if primary_artist and primary_artist != artist:
+        _add(sanitize_search_query(primary_artist), sanitize_search_query(feat_stripped_title))
+
+    # Collaborators in artist & reissue stripped
     for feat in featured_artists:
         _add(f"{primary_artist} {feat}", feat_stripped_title)
-
-    # 5. Reissue / Bonus Stripped
     clean_title = strip_reissue_and_bonus(feat_stripped_title)
-    _add(primary_artist, clean_title)
+    if primary_artist:
+        _add(primary_artist, clean_title)
 
-    # 6. Title-Only Fallbacks
-    _add("", feat_stripped_title)
-    _add("", clean_title)
+    # 5. Title-only full sanitized
+    _add("", sanitize_search_query(title))
+
+    # 6. Title-only feature-stripped
+    _add("", sanitize_search_query(feat_stripped_title))
+    if clean_title != feat_stripped_title:
+        _add("", sanitize_search_query(clean_title))
 
     return ladder

@@ -6,8 +6,8 @@ import sys
 import time
 from typing import Optional
 
-from PySide6.QtCore import QPointF, QRect, QRectF, Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen
+from PySide6.QtCore import QPointF, QRect, QRectF, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QKeyEvent, QPainter, QPen
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -36,7 +36,7 @@ def _format_time(ms: int) -> str:
 
 
 class _KaraokeCanvas(QWidget):
-    """Sub-pixel clipping QPainter canvas for syllable rendering."""
+    """Sub-pixel clipping QPainter canvas for syllable rendering with sub-vocal support."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -45,12 +45,15 @@ class _KaraokeCanvas(QWidget):
 
         self._base_font = QFont("sans-serif", 13)
         self._active_font = QFont("sans-serif", 14, QFont.Bold)
+        self._sub_font = QFont("sans-serif", 10, QFont.Bold)
 
         self._dim_color = QColor(140, 140, 140)
+        self._sub_dim_color = QColor(100, 100, 100)
         self._highlight_color = QColor(0, 180, 255)
         self._past_line_color = QColor(180, 180, 180)
 
         self._dim_pen = QPen(self._dim_color)
+        self._sub_dim_pen = QPen(self._sub_dim_color)
         self._highlight_pen = QPen(self._highlight_color)
         self._past_line_pen = QPen(self._past_line_color)
 
@@ -105,25 +108,48 @@ class _KaraokeCanvas(QWidget):
                 return
 
             lines = self._lyrics.lines
-            # Find active line index
-            active_idx = 0
-            for i, line in enumerate(lines):
-                if line.start_ms <= self._current_ms <= line.end_ms:
-                    active_idx = i
-                    break
-                elif line.start_ms > self._current_ms:
-                    active_idx = max(0, i - 1)
-                    break
-            else:
-                active_idx = len(lines) - 1
 
+            # 1. Identify active lead line and concurrent sub-vocal line (if any)
+            active_lead_idx = -1
+            active_sub_idx = -1
+
+            # Find active lead line
+            for i, line in enumerate(lines):
+                if not line.is_background and (line.start_ms <= self._current_ms <= line.end_ms + 400):
+                    active_lead_idx = i
+                    break
+
+            # Fallback if no active lead line is playing
+            if active_lead_idx == -1:
+                for i, line in enumerate(lines):
+                    if line.start_ms <= self._current_ms <= line.end_ms:
+                        active_lead_idx = i
+                        break
+                    elif line.start_ms > self._current_ms:
+                        active_lead_idx = max(0, i - 1)
+                        break
+                else:
+                    active_lead_idx = len(lines) - 1
+
+            # Check for concurrent active sub-vocal line
+            for i, line in enumerate(lines):
+                if line.is_background and (line.start_ms <= self._current_ms <= line.end_ms + 400):
+                    active_sub_idx = i
+                    break
+
+            active_idx = active_lead_idx
             line_height = 36.0
             center_y = float(height) / 2.0
 
-            # Draw lines around the active line
+            # 2. Render all lines relative to the active lead line
             for i, line in enumerate(lines):
+                # If this is the active sub-line and concurrently rendered under lead, skip here
+                if i == active_sub_idx and active_sub_idx != active_idx:
+                    continue
+
                 offset_idx = i - active_idx
-                y = center_y + (offset_idx * line_height)
+                extra_sub_offset = 20.0 if (active_sub_idx != -1 and offset_idx > 0) else 0.0
+                y = center_y + (offset_idx * line_height) + extra_sub_offset
 
                 if y < -line_height or y > height + line_height:
                     continue
@@ -132,10 +158,35 @@ class _KaraokeCanvas(QWidget):
                 if not line_text:
                     continue
 
-                is_active_line = (i == active_idx) and (line.start_ms <= self._current_ms <= line.end_ms + 400)
+                is_active_lead = (i == active_idx) and (line.start_ms <= self._current_ms <= line.end_ms + 400)
 
-                if is_active_line:
-                    self._draw_active_line(painter, line, line_text, y, float(width), line_height)
+                if is_active_lead:
+                    # Draw lead vocal line centered at normal font size
+                    self._draw_active_line(
+                        painter,
+                        line,
+                        line_text,
+                        y,
+                        float(width),
+                        line_height,
+                        self._active_font,
+                        self._dim_pen,
+                    )
+                    # If an overlapping sub-vocal is active concurrently, render it directly beneath
+                    if active_sub_idx != -1:
+                        sub_line = lines[active_sub_idx]
+                        sub_text = "".join(s.text for s in sub_line.syllables)
+                        if sub_text:
+                            self._draw_active_line(
+                                painter,
+                                sub_line,
+                                sub_text,
+                                y + 22.0,
+                                float(width),
+                                20.0,
+                                self._sub_font,
+                                self._sub_dim_pen,
+                            )
                 else:
                     painter.setFont(self._base_font)
                     pen = self._past_line_pen if i < active_idx else self._dim_pen
@@ -160,16 +211,18 @@ class _KaraokeCanvas(QWidget):
         y: float,
         view_width: float,
         line_height: float,
+        font: QFont,
+        dim_pen: QPen,
     ) -> None:
         """Render active line with constant-speed syllable clipping sweep."""
-        fm_active = QFontMetricsF(self._active_font)
-        text_width = fm_active.horizontalAdvance(line_text)
+        fm = QFontMetricsF(font)
+        text_width = fm.horizontalAdvance(line_text)
         x_start = max(10.0, (view_width - text_width) / 2.0)
-        baseline_y = y + fm_active.ascent() / 2.0
+        baseline_y = y + fm.ascent() / 2.0
 
         # 1. Base Layer (Inactive text)
-        painter.setFont(self._active_font)
-        painter.setPen(self._dim_pen)
+        painter.setFont(font)
+        painter.setPen(dim_pen)
         painter.drawText(int(x_start), int(baseline_y), str(line_text))
 
         # 2. Compute sweep clipping width across syllables
@@ -177,7 +230,7 @@ class _KaraokeCanvas(QWidget):
         sweep_x = x_start
 
         for syl in line.syllables:
-            syl_w = fm_active.horizontalAdvance(syl.text)
+            syl_w = fm.horizontalAdvance(syl.text)
             if self._current_ms <= syl.abs_start_ms:
                 # Not started yet
                 break
@@ -210,10 +263,15 @@ class _KaraokeCanvas(QWidget):
 
 
 class KaraokePreviewWidget(QWidget):
-    """Karaoke live-preview widget with real audio playback, 60 FPS sweeper, and transport bar."""
+    """Karaoke live-preview widget with real audio playback, 60 FPS sweeper, and VLC-style transport bar."""
+
+    previous_requested = Signal()
+    next_requested = Signal()
+    track_finished = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._audio_path: Optional[str] = None
         self._lyrics: Optional[SongLyrics] = None
         self._total_duration_ms: int = 0
@@ -228,6 +286,7 @@ class KaraokePreviewWidget(QWidget):
         self._player.positionChanged.connect(self._on_player_position_changed)
         self._player.durationChanged.connect(self._on_player_duration_changed)
         self._player.playbackStateChanged.connect(self._on_player_playback_state_changed)
+        self._player.mediaStatusChanged.connect(self._on_player_media_status_changed)
 
         self._init_ui()
 
@@ -249,16 +308,13 @@ class KaraokePreviewWidget(QWidget):
         # Transport Bar
         transport_layout = QHBoxLayout()
         transport_layout.setContentsMargins(4, 4, 4, 4)
-        transport_layout.setSpacing(8)
+        transport_layout.setSpacing(6)
 
-        # Play/Pause Button Restyle
-        self.btn_play_pause = QPushButton("▶ Play")
-        self.btn_play_pause.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_play_pause.setStyleSheet(
+        btn_style = (
             "QPushButton {"
             "    height: 26px;"
-            "    min-width: 75px;"
-            "    padding: 2px 14px;"
+            "    min-width: 65px;"
+            "    padding: 2px 10px;"
             "    border: 1px solid #4a4a4a;"
             "    border-radius: 3px;"
             "    background-color: #2e2e2e;"
@@ -275,14 +331,42 @@ class KaraokePreviewWidget(QWidget):
             "    border-color: #333333;"
             "}"
         )
+
+        # 1. Previous Button
+        self.btn_prev = QPushButton("⏮ Prev")
+        self.btn_prev.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_prev.setStyleSheet(btn_style)
+        self.btn_prev.clicked.connect(self.previous_requested.emit)
+        transport_layout.addWidget(self.btn_prev)
+
+        # 2. Play / Pause Button
+        self.btn_play_pause = QPushButton("▶ Play")
+        self.btn_play_pause.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_play_pause.setStyleSheet(btn_style)
         self.btn_play_pause.clicked.connect(self.toggle_play)
         transport_layout.addWidget(self.btn_play_pause)
 
+        # 3. Stop Button
+        self.btn_stop = QPushButton("⏹ Stop")
+        self.btn_stop.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_stop.setStyleSheet(btn_style)
+        self.btn_stop.clicked.connect(self.stop)
+        transport_layout.addWidget(self.btn_stop)
+
+        # 4. Next Button
+        self.btn_next = QPushButton("⏭ Next")
+        self.btn_next.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_next.setStyleSheet(btn_style)
+        self.btn_next.clicked.connect(self.next_requested.emit)
+        transport_layout.addWidget(self.btn_next)
+
+        # 5. Scrubber Slider
         self.slider_time = QSlider(Qt.Orientation.Horizontal)
         self.slider_time.setRange(0, 0)
         self.slider_time.sliderMoved.connect(self._on_slider_moved)
         transport_layout.addWidget(self.slider_time, stretch=1)
 
+        # 6. Timestamp Display
         self.lbl_time = QLabel("00:00.00 / 00:00.00")
         self.lbl_time.setFixedWidth(130)
         self.lbl_time.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -354,6 +438,13 @@ class KaraokePreviewWidget(QWidget):
                 self._player.pause()
             self._timer.stop()
 
+    def stop(self) -> None:
+        """Stop playback and reset seek position to 00:00.00."""
+        self.pause()
+        if not self._player.source().isEmpty():
+            self._player.stop()
+        self.seek(0)
+
     def _update_time_label(self) -> None:
         self.lbl_time.setText(f"{_format_time(self._current_ms)} / {_format_time(self._total_duration_ms)}")
 
@@ -383,6 +474,12 @@ class KaraokePreviewWidget(QWidget):
                 self.btn_play_pause.setText("▶ Play")
                 self.seek(0)
 
+    def _on_player_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            self.pause()
+            self.seek(0)
+            self.track_finished.emit()
+
     def _on_timer_tick(self) -> None:
         now = time.monotonic()
         elapsed_ms = int((now - self._last_tick_time) * 1000)
@@ -392,9 +489,45 @@ class KaraokePreviewWidget(QWidget):
         if self._total_duration_ms > 0 and new_time >= self._total_duration_ms:
             self.seek(self._total_duration_ms)
             self.pause()
+            self.seek(0)
+            self.track_finished.emit()
         else:
             self._current_ms = new_time
             if not self.slider_time.isSliderDown():
                 self.slider_time.setValue(new_time)
             self._update_time_label()
             self.canvas.set_time(new_time, is_playing=True)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Keyboard shortcuts for media playback and seeking."""
+        modifiers = event.modifiers()
+        key = event.key()
+
+        if modifiers == Qt.KeyboardModifier.ControlModifier:
+            if key == Qt.Key.Key_Left:
+                self.previous_requested.emit()
+                event.accept()
+                return
+            elif key == Qt.Key.Key_Right:
+                self.next_requested.emit()
+                event.accept()
+                return
+            elif key == Qt.Key.Key_Period or key == Qt.Key.Key_W:
+                self.stop()
+                event.accept()
+                return
+        elif modifiers == Qt.KeyboardModifier.NoModifier:
+            if key == Qt.Key.Key_Space:
+                self.toggle_play()
+                event.accept()
+                return
+            elif key == Qt.Key.Key_Left:
+                self.seek(self._current_ms - 5000)
+                event.accept()
+                return
+            elif key == Qt.Key.Key_Right:
+                self.seek(self._current_ms + 5000)
+                event.accept()
+                return
+
+        super().keyPressEvent(event)
