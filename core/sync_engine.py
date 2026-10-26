@@ -283,7 +283,12 @@ def to_enhanced_lrc(song: SongLyrics) -> str:
 
     for line in song.lines:
         if not line.syllables:
-            out.append(f"[{_ms_to_lrc(line.start_ms)}]")
+            if line.text:
+                out.append(f"[{_ms_to_lrc(line.start_ms)}]{line.text}")
+            else:
+                out.append(f"[{_ms_to_lrc(line.start_ms)}]")
+            if line.background_text:
+                out.append(f"[bg: {line.background_text}]")
             continue
 
         line_tag = f"[{_ms_to_lrc(line.start_ms)}]"
@@ -294,6 +299,16 @@ def to_enhanced_lrc(song: SongLyrics) -> str:
         last_end = line.syllables[-1].abs_end_ms
         body_parts.append(f"<{_ms_to_lrc(last_end)}>")
         out.append(line_tag + " ".join(body_parts))
+
+        if line.background_syllables:
+            bg_parts: List[str] = []
+            for span in line.background_syllables:
+                bg_parts.append(f"<{_ms_to_lrc(span.abs_start_ms)}>{span.text}")
+            bg_end = line.background_end_ms or line.background_syllables[-1].abs_end_ms
+            bg_parts.append(f"<{_ms_to_lrc(bg_end)}>")
+            out.append(f"[bg: {' '.join(bg_parts)}]")
+        elif line.background_text:
+            out.append(f"[bg: {line.background_text}]")
 
     return "\n".join(out)
 

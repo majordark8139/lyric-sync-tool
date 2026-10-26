@@ -191,11 +191,170 @@ def _ms_from_lrc(m: str, s: str, cs_str: str) -> int:
     return int(m) * 60000 + int(s) * 1000 + millis
 
 
+def _is_background_candidate_text(text: str) -> bool:
+    """True when text is fully parenthesized and contains no inner parentheses."""
+    t = text.strip()
+    if len(t) < 2:
+        return False
+    open_p = t[0] in ("(", "（")
+    close_p = t[-1] in (")", "）")
+    if not open_p or not close_p:
+        return False
+    inner = t[1:-1]
+    return not any(c in ("(", ")", "（", "）") for c in inner)
+
+
+def _extract_inline_background_words(
+    syllables: List[SyllableSpan],
+) -> tuple[List[SyllableSpan], List[SyllableSpan]]:
+    """Splits parenthesized word runs out of a syllable list into a background layer.
+
+    Returns (main_syllables, bg_syllables). If no valid run or unbalanced, returns (syllables, []).
+    """
+    main: List[SyllableSpan] = []
+    bg: List[SyllableSpan] = []
+    in_run = False
+    started = False
+
+    for s in syllables:
+        vis = s.text.strip()
+        if not in_run and vis and vis[0] in ("(", "（"):
+            started = True
+            in_run = True
+
+        if in_run:
+            bg.append(s)
+            if vis and vis[-1] in (")", "）"):
+                in_run = False
+        else:
+            main.append(s)
+
+    if not started or in_run or not main or not bg:
+        return syllables, []
+
+    return main, bg
+
+
+def _extract_inline_background_text(text: str) -> tuple[Optional[str], Optional[str]]:
+    """Extract parenthesized background runs from plain line text.
+
+    Returns (main_text, bg_text) if background vocal found, otherwise (None, None).
+    """
+    t = text.strip()
+    if _is_background_candidate_text(t):
+        return None, None
+
+    pattern = re.compile(r"(\([^\(\)（）]+\)|（[^\(\)（）]+）)")
+    matches = list(pattern.finditer(t))
+    if not matches:
+        return None, None
+
+    # Check for unbalanced parentheses
+    cleaned_check = pattern.sub("", t)
+    if any(c in ("(", ")", "（", "）") for c in cleaned_check):
+        return None, None
+
+    main_text = pattern.sub("", t).strip()
+    main_text = re.sub(r"\s+", " ", main_text).strip()
+    if not main_text:
+        return None, None
+
+    bg_parts = [m.group(0).strip() for m in matches]
+    bg_text = " ".join(bg_parts)
+    return main_text, bg_text
+
+
+def _append_background(
+    target: LyricLine,
+    bg_syllables: Optional[List[SyllableSpan]] = None,
+    bg_text: Optional[str] = None,
+    bg_end_ms: Optional[int] = None,
+) -> None:
+    """Attach background vocals/adlibs to target LyricLine."""
+    if bg_syllables:
+        if target.background_syllables:
+            merged = list(target.background_syllables)
+            last_syl = merged[-1]
+            if not last_syl.text.endswith(" "):
+                merged[-1] = SyllableSpan(
+                    abs_start_ms=last_syl.abs_start_ms,
+                    abs_end_ms=last_syl.abs_end_ms,
+                    text=last_syl.text + " ",
+                )
+            merged.extend(bg_syllables)
+            target.background_syllables = merged
+        else:
+            target.background_syllables = list(bg_syllables)
+
+        if bg_end_ms is not None:
+            target.background_end_ms = bg_end_ms
+        elif target.background_syllables:
+            target.background_end_ms = target.background_syllables[-1].abs_end_ms
+
+        target.background_text = "".join(s.text for s in target.background_syllables).strip()
+    elif bg_text:
+        cleaned_bg = bg_text.strip()
+        if target.background_text:
+            target.background_text = f"{target.background_text} {cleaned_bg}"
+        else:
+            target.background_text = cleaned_bg
+        if bg_end_ms is not None:
+            target.background_end_ms = bg_end_ms
+
+
+def _fold_background_lines(lines: List[LyricLine]) -> List[LyricLine]:
+    """Fold parenthesized background vocal lines into preceding line, and extract inline adlibs."""
+    result: List[LyricLine] = []
+    last_main: Optional[LyricLine] = None
+
+    for line in lines:
+        if last_main is not None and _is_background_candidate_text(line.text):
+            bg_syls = line.syllables if (line.syllables and len(line.syllables) > 1) else None
+            bg_end = line.end_ms
+            _append_background(
+                last_main,
+                bg_syllables=bg_syls,
+                bg_text=line.text,
+                bg_end_ms=bg_end,
+            )
+            continue
+
+        # Extract inline background adlibs if present
+        if line.syllables and len(line.syllables) > 1:
+            main_syls, bg_syls = _extract_inline_background_words(line.syllables)
+            if bg_syls:
+                line.syllables = main_syls
+                line.end_ms = main_syls[-1].abs_end_ms
+                line.text = "".join(s.text for s in main_syls).strip()
+                _append_background(
+                    line,
+                    bg_syllables=bg_syls,
+                    bg_end_ms=bg_syls[-1].abs_end_ms,
+                )
+            else:
+                main_text, bg_text = _extract_inline_background_text(line.text)
+                if main_text and bg_text:
+                    line.text = main_text
+                    _append_background(line, bg_text=bg_text, bg_end_ms=line.end_ms)
+        else:
+            main_text, bg_text = _extract_inline_background_text(line.text)
+            if main_text and bg_text:
+                line.text = main_text
+                line.syllables = [SyllableSpan(abs_start_ms=line.start_ms, abs_end_ms=line.end_ms, text=main_text)]
+                _append_background(line, bg_text=bg_text, bg_end_ms=line.end_ms)
+
+        result.append(line)
+        last_main = line
+
+    return result
+
+
 def _parse_lrc_text(text: str) -> Optional[SongLyrics]:
     """Parse standard LRC or Enhanced LRC text into SongLyrics.
 
-    Handles both standard ``[mm:ss.xx]Line text`` and Enhanced LRC
-    ``[mm:ss.xx]<mm:ss.xx>word1 <mm:ss.xx>word2`` syllable markers.
+    Handles standard ``[mm:ss.xx]Line text``, Enhanced LRC
+    ``[mm:ss.xx]<mm:ss.xx>word1 <mm:ss.xx>word2`` syllable markers,
+    and Noctis ``[bg: ...]`` / inline parenthesized background vocals.
 
     Args:
         text: Raw LRC/ELRC file content.
@@ -213,6 +372,42 @@ def _parse_lrc_text(text: str) -> Optional[SongLyrics]:
     for raw_line in text.splitlines():
         raw_line = raw_line.strip()
         if not raw_line:
+            continue
+
+        # iTunes / Noctis background vocal line "[bg: ...]"
+        if raw_line.lower().startswith("[bg:"):
+            if not lines:
+                continue
+            body = raw_line[4:]
+            if body.endswith("]"):
+                body = body[:-1]
+            body = body.strip()
+            word_matches = list(_ELRC_WORD_RE.finditer(body))
+            if word_matches:
+                has_word_sync = True
+                bg_syls: List[SyllableSpan] = []
+                if word_matches[0].start() > 0:
+                    leading = body[:word_matches[0].start()]
+                    if leading.strip():
+                        s_first = _ms_from_lrc(word_matches[0].group(1), word_matches[0].group(2), word_matches[0].group(3))
+                        bg_syls.append(SyllableSpan(abs_start_ms=lines[-1].start_ms, abs_end_ms=s_first, text=leading))
+                for j, wm in enumerate(word_matches):
+                    s_start = _ms_from_lrc(wm.group(1), wm.group(2), wm.group(3))
+                    s_text = wm.group(4)
+                    if not s_text and j == len(word_matches) - 1:
+                        if bg_syls:
+                            last = bg_syls[-1]
+                            bg_syls[-1] = SyllableSpan(abs_start_ms=last.abs_start_ms, abs_end_ms=s_start, text=last.text)
+                        continue
+                    if j + 1 < len(word_matches):
+                        next_wm = word_matches[j + 1]
+                        s_end = _ms_from_lrc(next_wm.group(1), next_wm.group(2), next_wm.group(3))
+                    else:
+                        s_end = s_start + 1000
+                    bg_syls.append(SyllableSpan(abs_start_ms=s_start, abs_end_ms=s_end, text=s_text))
+                _append_background(lines[-1], bg_syllables=bg_syls, bg_end_ms=bg_syls[-1].abs_end_ms)
+            else:
+                _append_background(lines[-1], bg_text=body, bg_end_ms=lines[-1].end_ms)
             continue
 
         # Metadata tag (non-digit first char after [)
@@ -234,9 +429,19 @@ def _parse_lrc_text(text: str) -> Optional[SongLyrics]:
 
         if word_matches:
             has_word_sync = True
+            if word_matches[0].start() > 0:
+                leading = body[:word_matches[0].start()]
+                if leading.strip():
+                    s_first = _ms_from_lrc(word_matches[0].group(1), word_matches[0].group(2), word_matches[0].group(3))
+                    syllables.append(SyllableSpan(abs_start_ms=start_ms, abs_end_ms=s_first, text=leading))
             for j, wm in enumerate(word_matches):
                 s_start = _ms_from_lrc(wm.group(1), wm.group(2), wm.group(3))
                 s_text = wm.group(4)
+                if not s_text and j == len(word_matches) - 1:
+                    if syllables:
+                        last = syllables[-1]
+                        syllables[-1] = SyllableSpan(abs_start_ms=last.abs_start_ms, abs_end_ms=s_start, text=last.text)
+                    continue
                 if j + 1 < len(word_matches):
                     next_wm = word_matches[j + 1]
                     s_end = _ms_from_lrc(next_wm.group(1), next_wm.group(2), next_wm.group(3))
@@ -253,6 +458,8 @@ def _parse_lrc_text(text: str) -> Optional[SongLyrics]:
 
     if not lines:
         return None
+
+    lines = _fold_background_lines(lines)
 
     return SongLyrics(metadata=metadata, lines=lines, is_word_synced=has_word_sync)
 

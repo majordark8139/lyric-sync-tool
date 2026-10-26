@@ -633,5 +633,57 @@ class TestReadTrackLyrics(unittest.TestCase):
         self.assertIsNone(read_track_lyrics(track))
 
 
+class TestNoctisBackgroundVocals(unittest.TestCase):
+    def test_inline_parenthesized_background_line_synced(self) -> None:
+        from core.tagger import _parse_lrc_text
+        lrc = "[00:27.00] She tryna dance for me (Let's go)"
+        parsed = _parse_lrc_text(lrc)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(len(parsed.lines), 1)
+        line = parsed.lines[0]
+        self.assertEqual(line.text, "She tryna dance for me")
+        self.assertEqual(line.background_text, "(Let's go)")
+        self.assertTrue(line.has_background)
+
+    def test_inline_parenthesized_background_word_synced(self) -> None:
+        from core.tagger import _parse_lrc_text
+        lrc = "[00:27.00]<00:27.00>She <00:27.20>tryna <00:27.40>dance <00:27.60>for <00:27.80>me <00:28.00>(Let's <00:28.50>go)<00:29.00>"
+        parsed = _parse_lrc_text(lrc)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(len(parsed.lines), 1)
+        line = parsed.lines[0]
+        self.assertEqual(line.text, "She tryna dance for me")
+        self.assertEqual(line.background_text, "(Let's go)")
+        self.assertEqual(len(line.syllables), 5)
+        self.assertEqual(len(line.background_syllables), 2)
+        self.assertTrue(line.has_background)
+
+    def test_fold_parenthesized_lines_into_preceding(self) -> None:
+        from core.tagger import _parse_lrc_text
+        lrc = "[00:25.00] Lead Line\n[00:27.00] (Let's go)\n[00:30.00] Next line"
+        parsed = _parse_lrc_text(lrc)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(len(parsed.lines), 2)
+        self.assertEqual(parsed.lines[0].text, "Lead Line")
+        self.assertEqual(parsed.lines[0].background_text, "(Let's go)")
+        self.assertEqual(parsed.lines[1].text, "Next line")
+
+    def test_bg_prefix_line_parsing_and_roundtrip(self) -> None:
+        from core.tagger import _parse_lrc_text
+        from core.sync_engine import to_enhanced_lrc
+        lrc = "[00:25.00]<00:25.00>Lead <00:26.00>vocal<00:27.00>\n[bg: <00:25.50>(Back<00:26.50>ground)<00:27.50>]"
+        parsed = _parse_lrc_text(lrc)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(len(parsed.lines), 1)
+        line = parsed.lines[0]
+        self.assertEqual(line.text, "Lead vocal")
+        self.assertEqual(line.background_text, "(Background)")
+        self.assertEqual(len(line.background_syllables), 2)
+
+        # Verify to_enhanced_lrc exports [bg: ...]
+        exported = to_enhanced_lrc(parsed)
+        self.assertIn("[bg: <00:25.50>(Back <00:26.50>ground) <00:27.50>]", exported)
+
+
 if __name__ == "__main__":
     unittest.main()

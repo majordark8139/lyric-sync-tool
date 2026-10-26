@@ -22,6 +22,25 @@ class LyricLine:
     end_ms: int
     syllables: List[SyllableSpan] = field(default_factory=list)
     is_background: bool = False
+    background_text: Optional[str] = None
+    background_syllables: List[SyllableSpan] = field(default_factory=list)
+    background_end_ms: Optional[int] = None
+    _text: Optional[str] = None
+
+    @property
+    def text(self) -> str:
+        if self._text is not None:
+            return self._text
+        return "".join(s.text for s in self.syllables).strip()
+
+    @text.setter
+    def text(self, val: str) -> None:
+        self._text = val
+
+    @property
+    def has_background(self) -> bool:
+        return bool(self.background_text or self.background_syllables)
+
 
 
 @dataclass
