@@ -695,6 +695,18 @@ class TestNoctisBackgroundVocals(unittest.TestCase):
         self.assertIn("(Let's go)", out)
         self.assertNotIn("[bg:", out)
 
+    def test_ttml_background_vocal_export_from_parsed_lrc(self) -> None:
+        from core.tagger import _parse_lrc_text
+        from core.sync_engine import to_ttml
+        lrc = "[00:27.78] She tryna dance for me (Let's go)"
+        parsed = _parse_lrc_text(lrc)
+        ttml_out = to_ttml(parsed)
+        self.assertIn('xmlns:ttm="http://www.w3.org/ns/ttml#metadata"', ttml_out)
+        self.assertIn('<span ttm:role="x-bg">', ttml_out)
+        self.assertIn("dance", ttml_out)
+        self.assertIn("Let's go", ttml_out)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -323,6 +323,51 @@ class TestExporters(unittest.TestCase):
         self.assertIn('begin="00:00:01.000"', ttml)   # line 1 start_ms=1000
         self.assertIn('end="00:00:03.000"', ttml)     # line 1 end_ms=3000
 
+    def test_ttml_background_text_export(self) -> None:
+        """Background text is serialized into ttm:role='x-bg' spans with ttm namespace."""
+        song = SongLyrics(
+            metadata={},
+            lines=[
+                LyricLine(
+                    start_ms=1000,
+                    end_ms=4000,
+                    _text="Lead vocal",
+                    background_text="(Background)",
+                )
+            ],
+        )
+        ttml = to_ttml(song)
+        self.assertIn('xmlns:ttm="http://www.w3.org/ns/ttml#metadata"', ttml)
+        self.assertIn('<span ttm:role="x-bg">', ttml)
+        self.assertIn("(Background)", ttml)
+        self.assertIn("Lead vocal", ttml)
+
+    def test_ttml_background_syllables_export(self) -> None:
+        """Background syllables generate timed child spans inside ttm:role='x-bg'."""
+        song = SongLyrics(
+            metadata={},
+            lines=[
+                LyricLine(
+                    start_ms=1000,
+                    end_ms=5000,
+                    syllables=[
+                        SyllableSpan(abs_start_ms=1000, abs_end_ms=2500, text="Lead "),
+                        SyllableSpan(abs_start_ms=2500, abs_end_ms=3500, text="vocal"),
+                    ],
+                    background_syllables=[
+                        SyllableSpan(abs_start_ms=3500, abs_end_ms=4200, text="(Back"),
+                        SyllableSpan(abs_start_ms=4200, abs_end_ms=5000, text="ground)"),
+                    ],
+                )
+            ],
+        )
+        ttml = to_ttml(song)
+        self.assertIn('xmlns:ttm="http://www.w3.org/ns/ttml#metadata"', ttml)
+        self.assertIn('<span ttm:role="x-bg">', ttml)
+        self.assertIn('<span begin="00:00:03.500" end="00:00:04.200">(Back</span>', ttml)
+        self.assertIn('<span begin="00:00:04.200" end="00:00:05.000">ground)</span>', ttml)
+
+
 
 class TestPlainText(unittest.TestCase):
     """Tests for :func:`~core.sync_engine.to_plain_text`."""

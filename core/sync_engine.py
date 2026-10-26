@@ -352,7 +352,8 @@ def to_ttml(song: SongLyrics) -> str:
 
     Syllable text values are escaped with :func:`xml.sax.saxutils.escape` to
     ensure the output is well-formed XML even if the lyrics contain ``<``,
-    ``>``, or ``&``.
+    ``>``, or ``&``. Background vocals are serialized using Apple Music
+    ``ttm:role="x-bg"`` spans.
 
     Args:
         song: Source :class:`~core.models.SongLyrics`.
@@ -365,11 +366,6 @@ def to_ttml(song: SongLyrics) -> str:
     for line in song.lines:
         begin = _ms_to_ttml(line.start_ms)
         end = _ms_to_ttml(line.end_ms)
-        if not line.syllables:
-            lines_xml.append(
-                f'      <p begin="{begin}" end="{end}"></p>'
-            )
-            continue
 
         spans: List[str] = []
         for span in line.syllables:
@@ -378,15 +374,45 @@ def to_ttml(song: SongLyrics) -> str:
             escaped = xml_escape(span.text)
             spans.append(f'<span begin="{sb}" end="{se}">{escaped}</span>')
 
-        lines_xml.append(
-            f'      <p begin="{begin}" end="{end}">{"".join(spans)}</p>'
-        )
+        if not spans and line.text:
+            escaped = xml_escape(line.text)
+            spans.append(f'<span begin="{begin}" end="{end}">{escaped}</span>')
+
+        bg_spans: List[str] = []
+        if line.background_syllables:
+            for span in line.background_syllables:
+                sb = _ms_to_ttml(span.abs_start_ms)
+                se = _ms_to_ttml(span.abs_end_ms)
+                escaped = xml_escape(span.text)
+                bg_spans.append(f'<span begin="{sb}" end="{se}">{escaped}</span>')
+        elif line.background_text:
+            bg_start_ms = line.syllables[-1].abs_end_ms if line.syllables else line.start_ms
+            bg_end_ms = line.background_end_ms or line.end_ms
+            if bg_start_ms >= bg_end_ms:
+                bg_start_ms = line.start_ms
+                bg_end_ms = line.end_ms
+            sb = _ms_to_ttml(bg_start_ms)
+            se = _ms_to_ttml(bg_end_ms)
+            escaped = xml_escape(line.background_text)
+            bg_spans.append(f'<span begin="{sb}" end="{se}">{escaped}</span>')
+
+        bg_xml = f'<span ttm:role="x-bg">{"".join(bg_spans)}</span>' if bg_spans else ""
+
+        if not spans and not bg_spans:
+            lines_xml.append(
+                f'      <p begin="{begin}" end="{end}"></p>'
+            )
+        else:
+            lines_xml.append(
+                f'      <p begin="{begin}" end="{end}">{"".join(spans)}{bg_xml}</p>'
+            )
 
     body = "\n".join(lines_xml)
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<tt xml:lang="und"\n'
         '    xmlns="http://www.w3.org/ns/ttml"\n'
+        '    xmlns:ttm="http://www.w3.org/ns/ttml#metadata"\n'
         '    xmlns:itunes="http://music.apple.com/lyric-ttml-internal"\n'
         '    itunes:timing="Word">\n'
         '  <body>\n'
