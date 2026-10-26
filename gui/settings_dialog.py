@@ -17,6 +17,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from typing import Optional
+
+from core.config import Settings, SettingsManager
 from core.models import TaggingConfig
 
 _SUB_LABEL_STYLE = "font-size: 10px; color: #8b949e; margin-bottom: 6px;"
@@ -34,12 +37,16 @@ class TaggingSettingsDialog(QDialog):
 
     config_saved = Signal(TaggingConfig)
 
-    def __init__(self, current_config: TaggingConfig, parent=None) -> None:
+    def __init__(self, current_config: Optional[TaggingConfig] = None, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Tagging & Synchronization Settings")
         self.setMinimumSize(540, 480)
         self.resize(540, 480)
-        self._config = current_config
+        self._settings_mgr = SettingsManager()
+        if current_config is not None:
+            self._config = current_config
+        else:
+            self._config = self._settings_mgr.load_settings()
         self._init_ui()
         self._load_config(self._config)
 
@@ -276,7 +283,7 @@ class TaggingSettingsDialog(QDialog):
         self.chk_m4a_atom.setChecked(cfg.m4a_embed_atom)
         self._toggle_embed_suboptions(cfg.embed_metadata)
 
-    def get_config(self) -> TaggingConfig:
+    def get_config(self) -> Settings:
         if self.rad_elrc.isChecked():
             lrc_ext = "elrc"
         elif self.rad_both.isChecked():
@@ -284,7 +291,10 @@ class TaggingSettingsDialog(QDialog):
         else:
             lrc_ext = "lrc"
 
-        return TaggingConfig(
+        theme = getattr(self._config, "theme", "Dark")
+        active_provider = getattr(self._config, "active_provider", "Kugou")
+
+        return Settings(
             write_lrc=self.chk_write_lrc.isChecked(),
             lrc_extension=lrc_ext,
             write_ttml=self.chk_write_ttml.isChecked(),
@@ -299,10 +309,13 @@ class TaggingSettingsDialog(QDialog):
             mp3_embed_txxx=self.chk_mp3_txxx.isChecked(),
             mp3_embed_sylt=self.chk_mp3_sylt.isChecked(),
             m4a_embed_atom=self.chk_m4a_atom.isChecked(),
+            theme=theme,
+            active_provider=active_provider,
         )
 
     def _save_and_accept(self) -> None:
         cfg = self.get_config()
         self._config = cfg
+        self._settings_mgr.save_settings(cfg)
         self.config_saved.emit(cfg)
         self.accept()

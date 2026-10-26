@@ -40,8 +40,11 @@ from PySide6.QtWidgets import (
 )
 
 from core.batch_worker import BatchTaggerWorker, ScannerWorker, _extract_tag_string
+from core.config import SettingsManager
 from core.models import LyricLine, SongLyrics, SyllableSpan, SyncState, TaggingConfig, TrackItem
 from core.providers.kugou import KugouProvider
+from core.providers.lrc_red import LrcRedProvider
+from core.providers.unison import UnisonProvider
 from core.tagger import apply_lyrics, detect_sync_state, read_track_lyrics, strip_lyrics
 from gui.editor_widget import LyricsEditorWidget
 from gui.manual_search_dialog import ManualSearchDialog
@@ -196,7 +199,10 @@ class MainWindow(QMainWindow):
 
         self.setAcceptDrops(True)
 
-        self.config = TaggingConfig()
+        self.settings_manager = SettingsManager()
+        self.current_settings = self.settings_manager.load_settings()
+        self.config = self.current_settings
+        self._tree_was_sorting: bool = False
         self._tracks: List[TrackItem] = []
         self._album_nodes: Dict[Tuple[str, str], QTreeWidgetItem] = {}
         self._current_active_item: Optional[QTreeWidgetItem] = None
@@ -206,7 +212,19 @@ class MainWindow(QMainWindow):
         self.tagger_thread: Optional[BatchTaggerWorker] = None
 
         self._init_ui()
-        self.set_theme("Dark")
+
+        # Restore active provider
+        saved_provider = getattr(self.current_settings, "active_provider", "Kugou")
+        p_idx = self.cmb_provider.findText(saved_provider)
+        if p_idx >= 0:
+            self.cmb_provider.setCurrentIndex(p_idx)
+
+        # Restore active theme
+        saved_theme = getattr(self.current_settings, "theme", "Dark")
+        self.set_theme(saved_theme)
+        t_idx = self.cmb_theme.findText(saved_theme)
+        if t_idx >= 0:
+            self.cmb_theme.setCurrentIndex(t_idx)
 
     def _init_ui(self) -> None:
         # ── Toolbar ──
@@ -239,7 +257,8 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
 
         self.cmb_provider = QComboBox()
-        self.cmb_provider.addItems(["Kugou"])
+        self.cmb_provider.addItems(["Kugou", "lrc.red", "Unison"])
+        self.cmb_provider.currentTextChanged.connect(self._on_provider_changed)
         toolbar.addWidget(self.cmb_provider)
 
         toolbar.addSeparator()
@@ -699,6 +718,7 @@ class MainWindow(QMainWindow):
                 duration_ms=track.duration_ms,
                 config=self.config,
                 parent=self,
+                provider=self._get_active_provider(),
             )
             if dlg.exec() == ManualSearchDialog.DialogCode.Accepted:
                 lyrics = dlg.get_selected_lyrics()
@@ -714,13 +734,32 @@ class MainWindow(QMainWindow):
                         self.editor_widget.set_lyrics(lyrics)
                     self.statusBar().showMessage(f"Applied manual lyrics to '{track.title}'.")
 
+    def _on_provider_changed(self, text: str) -> None:
+        self.current_settings.active_provider = text
+        self.settings_manager.save_settings(self.current_settings)
+
+    def _on_theme_changed(self, text: str) -> None:
+        self.set_theme(text)
+        self.current_settings.theme = text
+        self.settings_manager.save_settings(self.current_settings)
+
+    def _get_active_provider(self):
+        text = self.cmb_provider.currentText()
+        if text == "lrc.red":
+            return LrcRedProvider()
+        elif text == "Unison":
+            return UnisonProvider()
+        return KugouProvider()
+
     def _on_settings_clicked(self) -> None:
-        dlg = TaggingSettingsDialog(self.config, self)
+        dlg = TaggingSettingsDialog(self.current_settings, self)
         dlg.config_saved.connect(self._on_config_saved)
         dlg.exec()
 
     def _on_config_saved(self, new_config: TaggingConfig) -> None:
+        self.current_settings = new_config
         self.config = new_config
+        self.settings_manager.save_settings(new_config)
         self.statusBar().showMessage("Settings saved.")
         self._apply_missing_filter()
 
@@ -746,8 +785,12 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.statusBar().showMessage(f"Starting batch tagging for {len(selected_pairs)} track(s)...")
 
+        # Disable tree sorting before launching BatchTaggerWorker
+        self._tree_was_sorting = self.tree.isSortingEnabled()
+        self.tree.setSortingEnabled(False)
+
         selected_tracks = [t for _, t in selected_pairs]
-        self.tagger_thread = BatchTaggerWorker(selected_tracks, self.config, KugouProvider(), self)
+        self.tagger_thread = BatchTaggerWorker(selected_tracks, self.config, self._get_active_provider(), self)
 
         def _on_track_progress(idx: int, status_text: str, track: TrackItem) -> None:
             if idx < len(selected_pairs):
@@ -768,9 +811,11 @@ class MainWindow(QMainWindow):
         if self.tagger_thread and self.tagger_thread.isRunning():
             self.tagger_thread.cancel()
             self.btn_cancel_tagging.setEnabled(False)
+            self.tree.setSortingEnabled(getattr(self, "_tree_was_sorting", False))
             self.statusBar().showMessage("Tagging cancelled.")
 
     def _on_batch_finished(self) -> None:
+        self.tree.setSortingEnabled(getattr(self, "_tree_was_sorting", False))
         self.btn_start_tagging.setEnabled(True)
         self.btn_cancel_tagging.setEnabled(False)
         self.progress_bar.setVisible(False)

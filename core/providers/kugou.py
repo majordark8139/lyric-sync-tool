@@ -11,6 +11,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
+from core.matcher import score_candidate
 from core.models import LyricLine, SongLyrics, SyllableSpan, TaggingConfig
 from core.normalizer import clean_kugou_query, generate_query_ladder
 from core.providers.base import BaseLyricsProvider
@@ -299,5 +300,48 @@ class KugouProvider(BaseLyricsProvider):
                 if result:
                     print(f"[Kugou] step {step_idx}: matched — {cand.get('song', '')} / {cand.get('singer', '')}")
                     return result
+
+        # Soft Candidate Scoring fallback: If exact matches fail, search with clean_kugou_query(title)
+        if config is None or config.smart_fallback:
+            clean_title = clean_kugou_query(title)
+            if clean_title:
+                search_params = urllib.parse.urlencode({
+                    "ver": "1",
+                    "man": "yes",
+                    "client": "pc",
+                    "keyword": clean_title,
+                    "duration": str(duration_ms) if duration_ms > 0 else "0",
+                })
+                search_url = f"{_SEARCH_URL}?{search_params}"
+                print(f"[Kugou] soft scoring search: keyword={clean_title!r}")
+                search_data = _make_request(search_url)
+                if search_data:
+                    raw_candidates = search_data.get("candidates", [])
+                    scored = []
+                    for cand in raw_candidates:
+                        c_artist = str(cand.get("singer", ""))
+                        c_title = str(cand.get("song", ""))
+                        c_dur = _cand_dur(cand)
+                        s = score_candidate(
+                            audio_artist=artist,
+                            audio_title=title,
+                            audio_duration_ms=duration_ms,
+                            cand_artist=c_artist,
+                            cand_title=c_title,
+                            cand_duration_ms=c_dur,
+                        )
+                        scored.append((s, cand))
+
+                    # Sort highest-scoring candidate first
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    for score_val, cand in scored:
+                        if score_val >= 65.0:
+                            result = _try_download(cand)
+                            if result:
+                                print(
+                                    f"[Kugou] soft match (score={score_val:.1f}): "
+                                    f"{cand.get('song', '')} / {cand.get('singer', '')}"
+                                )
+                                return result
 
         return None

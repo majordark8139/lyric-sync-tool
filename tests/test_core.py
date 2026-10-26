@@ -349,5 +349,104 @@ class TestPlainText(unittest.TestCase):
         self.assertEqual(len(result.split("\n")), len(song.lines))
 
 
+class TestCandidateMatcher(unittest.TestCase):
+    """Tests for core/matcher.py score_candidate."""
+
+    def test_duration_scoring(self) -> None:
+        from core.matcher import score_candidate
+        # Delta <= 1500 ms -> full 40 pts
+        s_full = score_candidate("Artist", "Title", 100000, "Artist", "Title", 101000)
+        self.assertEqual(s_full, 100.0)
+
+        # Delta = 2750 ms -> 20 pts (midpoint of [1500, 4000])
+        s_mid = score_candidate("Artist", "Title", 100000, "Artist", "Title", 102750)
+        self.assertAlmostEqual(s_mid, 80.0, places=1)
+
+        # Delta >= 4000 ms -> 0 pts for duration
+        s_zero = score_candidate("Artist", "Title", 100000, "Artist", "Title", 105000)
+        self.assertAlmostEqual(s_zero, 60.0, places=1)
+
+    def test_primary_artist_and_title(self) -> None:
+        from core.matcher import score_candidate
+        # Multi-artist Vorbis delimiter extraction
+        score = score_candidate(
+            audio_artist="Don Toliver; Kali Uchis",
+            audio_title="4 Me (feat. Kali Uchis)",
+            audio_duration_ms=160000,
+            cand_artist="Don Toliver",
+            cand_title="4 Me",
+            cand_duration_ms=160500,
+        )
+        self.assertGreaterEqual(score, 90.0)
+
+
+class TestSettingsManager(unittest.TestCase):
+    """Tests for core/config.py Settings and SettingsManager."""
+
+    def test_load_and_save_persistence(self) -> None:
+        from core.config import SettingsManager, Settings
+        sm = SettingsManager(organization="lyric-sync-tool-test", application="UnitTestConfig")
+        settings = sm.load_settings()
+        self.assertIsInstance(settings, Settings)
+
+        settings.active_provider = "Unison"
+        settings.duration_tolerance_ms = 3456
+        settings.purge_stale = False
+        settings.create_backup = True
+        settings.force_overwrite = True
+        settings.theme = "OLED Dark"
+
+        sm.save_settings(settings)
+        reloaded = sm.load_settings()
+
+        self.assertEqual(reloaded.active_provider, "Unison")
+        self.assertEqual(reloaded.duration_tolerance_ms, 3456)
+        self.assertFalse(reloaded.purge_stale)
+        self.assertTrue(reloaded.create_backup)
+        self.assertTrue(reloaded.force_overwrite)
+        self.assertEqual(reloaded.theme, "OLED Dark")
+
+
+class TestMultiProviders(unittest.TestCase):
+    """Tests for LrcRedProvider and UnisonProvider."""
+
+    def test_provider_names_and_classes(self) -> None:
+        from core.providers.kugou import KugouProvider
+        from core.providers.lrc_red import LrcRedProvider
+        from core.providers.unison import UnisonProvider
+
+        p1 = KugouProvider()
+        p2 = LrcRedProvider()
+        p3 = UnisonProvider()
+
+        self.assertEqual(p1.name, "kugou")
+        self.assertEqual(p2.name, "lrc.red")
+        self.assertEqual(p3.name, "Unison")
+
+    def test_lrc_red_and_unison_parse_synced_lyrics(self) -> None:
+        from unittest.mock import MagicMock, patch
+        from core.providers.lrc_red import LrcRedProvider
+        from core.providers.unison import UnisonProvider
+
+        fake_lrc = "[00:01.00]<00:01.00>Hel<00:01.40>lo [00:02.00]<00:02.00>World\n"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"syncedLyrics": fake_lrc}
+
+        # Test LrcRedProvider
+        p_lrc = LrcRedProvider()
+        with patch("core.providers.lrc_red._HTTP_SESSION.get", return_value=mock_resp):
+            res = p_lrc.search_word_sync("Song", "Artist", 120000)
+            self.assertIsNotNone(res)
+            self.assertGreater(len(res.lines), 0)
+
+        # Test UnisonProvider
+        p_unison = UnisonProvider()
+        with patch("core.providers.unison._HTTP_SESSION.get", return_value=mock_resp):
+            res = p_unison.search_word_sync("Song", "Artist", 120000)
+            self.assertIsNotNone(res)
+            self.assertGreater(len(res.lines), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

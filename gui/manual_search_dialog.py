@@ -117,6 +117,7 @@ class ManualSearchDialog(QDialog):
         duration_ms: int = 0,
         config: Optional[TaggingConfig] = None,
         parent=None,
+        provider: Optional[Any] = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Manual Lyrics Search")
@@ -124,6 +125,7 @@ class ManualSearchDialog(QDialog):
         self.resize(700, 500)
         self._duration_ms = duration_ms
         self._config = config
+        self._provider = provider
         self._candidates: List[Dict[str, Any]] = []
         self._worker: Optional[ManualSearchWorker] = None
         self.selected_lyrics: Optional[SongLyrics] = None

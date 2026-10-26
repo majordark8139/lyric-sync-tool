@@ -152,6 +152,8 @@ class BatchTaggerWorker(QThread):
             if not self._config.overwrite_existing_word_sync and track.sync_state == SyncState.WORD:
                 self.track_progress.emit(idx, "Skipped (Existing Word Sync)", track)
                 self.overall_progress.emit(idx + 1, total)
+                if idx < total - 1 and not (self.isInterruptionRequested() or self._is_cancelled):
+                    self.msleep(180)
                 continue
 
             try:
@@ -164,6 +166,8 @@ class BatchTaggerWorker(QThread):
             except Exception as e:
                 self.track_progress.emit(idx, f"Error: {e}", track)
                 self.overall_progress.emit(idx + 1, total)
+                if idx < total - 1 and not (self.isInterruptionRequested() or self._is_cancelled):
+                    self.msleep(180)
                 continue
 
             if lyrics and lyrics.lines:
@@ -180,5 +184,9 @@ class BatchTaggerWorker(QThread):
                 self.track_progress.emit(idx, "No Word Sync Found", track)
 
             self.overall_progress.emit(idx + 1, total)
+
+            # Cooperative pause between tracks to prevent socket saturation and write stutter
+            if idx < total - 1 and not (self.isInterruptionRequested() or self._is_cancelled):
+                self.msleep(180)
 
         self.batch_finished.emit()
