@@ -598,7 +598,26 @@ class TestTtmlParserAndWordSyncGuardrail(unittest.TestCase):
         self.assertEqual(track.sync_state, SyncState.WORD)
         self.assertEqual(track.status, "Tagged (WORD)")
 
+    def test_ttml_whitespace_preservation(self) -> None:
+        from core.ttml_parser import parse_ttml
+
+        # 1. Separated with XML space in tail
+        xml1 = """<tt xmlns="http://www.w3.org/ns/ttml"><p begin="00:00:00.000" end="00:00:03.000"><span>Don't</span> <span>tell</span> <span>me</span> <span>what</span> <span>you</span> <span>owe</span></p></tt>"""
+        lyrics1 = parse_ttml(xml1)
+        self.assertEqual(lyrics1.lines[0].text, "Don't tell me what you owe")
+
+        # 2. Glued spans without tail whitespace
+        xml2 = """<tt xmlns="http://www.w3.org/ns/ttml"><p begin="00:00:00.000" end="00:00:03.000"><span>Dive</span><span>in</span><span>that</span><span>pussy</span><span>blind</span></p></tt>"""
+        lyrics2 = parse_ttml(xml2)
+        self.assertEqual(lyrics2.lines[0].text, "Dive in that pussy blind")
+
+    def test_unison_candidate_score_rejection(self) -> None:
+        from core.matcher import score_candidate
+        score = score_candidate("slayr", "Track 1", 145000, "slayr", "Sloppy Joe", 146000)
+        self.assertLess(score, 70.0)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

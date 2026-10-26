@@ -61,13 +61,45 @@ def _is_bg_role(elem: ET.Element) -> bool:
     return False
 
 
+def _format_span_text(
+    spans: List[ET.Element],
+    index: int,
+    punctuation: str = ".,!?;:'\")-]}、。！？，…",
+) -> str:
+    """Combine span text and XML tail whitespace, preserving single space delimiters."""
+    elem = spans[index]
+    word = elem.text or ""
+    tail = elem.tail or ""
+
+    has_tail_space = any(c.isspace() for c in tail)
+    has_word_space = any(c.isspace() for c in word[-1:]) if word else False
+
+    if has_word_space:
+        text_with_tail = word
+    elif has_tail_space:
+        text_with_tail = word + " "
+    else:
+        text_with_tail = word + tail
+
+    # If text_with_tail does not end with space, and is followed by another span
+    # that doesn't start with punctuation, preserve a single space delimiter
+    if not text_with_tail.endswith(" ") and index < len(spans) - 1:
+        next_elem = spans[index + 1]
+        next_word = (next_elem.text or "").lstrip()
+        if next_word and next_word[0] not in punctuation:
+            text_with_tail = text_with_tail + " "
+
+    return text_with_tail
+
+
 def parse_ttml(xml_content: str) -> SongLyrics:
     """Parse TTML XML content into a populated SongLyrics instance.
 
     Handles root namespaces (``http://www.w3.org/ns/ttml``,
     ``http://music.apple.com/lyric-ttml-internal``,
     ``http://www.w3.org/ns/ttml#metadata``), extracting line timings,
-    discrete syllable timestamps, and background vocal ad-libs.
+    discrete syllable timestamps, preserved whitespace delimiters,
+    and background vocal ad-libs.
 
     Args:
         xml_content: XML string conforming to TTML specification.
@@ -95,45 +127,46 @@ def parse_ttml(xml_content: str) -> SongLyrics:
         child_spans = [child for child in p if _local_tag(child) == "span"]
 
         if child_spans:
-            for child in child_spans:
-                if _is_bg_role(child):
-                    sub_spans = [gc for gc in child if _local_tag(gc) == "span"]
-                    if sub_spans:
-                        for gc in sub_spans:
-                            gc_text = gc.text or ""
-                            gc_start = parse_time(gc.attrib.get("begin", str(line_start)))
-                            gc_end = parse_time(gc.attrib.get("end", str(gc_start)))
-                            gc_dur = max(0, gc_end - gc_start)
-                            bg_syllables.append(
-                                Syllable(text=gc_text, start_ms=gc_start, duration_ms=gc_dur)
-                            )
-                            bg_text_parts.append(gc_text)
-                            if gc.tail:
-                                bg_text_parts.append(gc.tail)
-                    else:
-                        txt = (child.text or "").strip()
-                        if txt:
-                            bg_text_parts.append(txt)
-                        if "begin" in child.attrib:
-                            s_start = parse_time(child.attrib.get("begin"))
-                            s_end = parse_time(child.attrib.get("end", str(s_start)))
-                            s_dur = max(0, s_end - s_start)
-                            bg_syllables.append(
-                                Syllable(text=txt, start_ms=s_start, duration_ms=s_dur)
-                            )
+            lead_spans = [child for child in child_spans if not _is_bg_role(child)]
+            bg_spans = [child for child in child_spans if _is_bg_role(child)]
+
+            for i, child in enumerate(lead_spans):
+                formatted_text = _format_span_text(lead_spans, i)
+                span_start = parse_time(child.attrib.get("begin", str(line_start)))
+                span_end = parse_time(child.attrib.get("end", str(span_start)))
+                duration = max(0, span_end - span_start)
+                syllables.append(
+                    Syllable(text=formatted_text, start_ms=span_start, duration_ms=duration)
+                )
+
+            for bg_child in bg_spans:
+                sub_spans = [gc for gc in bg_child if _local_tag(gc) == "span"]
+                if sub_spans:
+                    for j, gc in enumerate(sub_spans):
+                        gc_formatted = _format_span_text(sub_spans, j)
+                        gc_start = parse_time(gc.attrib.get("begin", str(line_start)))
+                        gc_end = parse_time(gc.attrib.get("end", str(gc_start)))
+                        gc_dur = max(0, gc_end - gc_start)
+                        bg_syllables.append(
+                            Syllable(text=gc_formatted, start_ms=gc_start, duration_ms=gc_dur)
+                        )
+                        bg_text_parts.append(gc_formatted)
                 else:
-                    text = child.text or ""
-                    span_start = parse_time(child.attrib.get("begin", str(line_start)))
-                    span_end = parse_time(child.attrib.get("end", str(span_start)))
-                    duration = max(0, span_end - span_start)
-                    syllables.append(
-                        Syllable(text=text, start_ms=span_start, duration_ms=duration)
-                    )
+                    txt = (bg_child.text or "").strip()
+                    if txt:
+                        bg_text_parts.append(txt)
+                    if "begin" in bg_child.attrib:
+                        s_start = parse_time(bg_child.attrib.get("begin"))
+                        s_end = parse_time(bg_child.attrib.get("end", str(s_start)))
+                        s_dur = max(0, s_end - s_start)
+                        bg_syllables.append(
+                            Syllable(text=txt, start_ms=s_start, duration_ms=s_dur)
+                        )
 
             bg_text = "".join(bg_text_parts).strip() if bg_text_parts else None
 
             if syllables:
-                full_text = "".join(s.text for s in syllables)
+                full_text = "".join(s.text for s in syllables).strip()
                 if not line_end:
                     line_end = max(s.abs_end_ms for s in syllables)
                 lines.append(

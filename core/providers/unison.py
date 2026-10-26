@@ -176,15 +176,22 @@ class UnisonProvider(BaseLyricsProvider):
                         cand_duration_ms=hit_dur_ms,
                     )
 
-                    # Boost richsync hits
-                    if str(hit.get("syncType", "")).lower() == "richsync":
-                        score += 5.0
+                    # Require minimum score >= 70.0 (strict title and duration matching)
+                    if score < 70.0:
+                        continue
 
-                    if score > best_score:
-                        best_score = score
+                    # Slight tiebreaker for richsync among qualified candidates
+                    effective_score = score + (0.5 if str(hit.get("syncType", "")).lower() == "richsync" else 0.0)
+
+                    if effective_score > best_score:
+                        best_score = effective_score
                         best_hit = hit
 
-                if best_hit and best_score >= 60.0:
+                if hits and not best_hit:
+                    # Search hits were returned but none met the >= 70.0 threshold
+                    return None
+
+                if best_hit:
                     entry_url = f"{_UNISON_BASE_URL}/lyrics/{best_hit['id']}"
                     entry_resp = _HTTP_SESSION.get(entry_url, timeout=5.0)
                     if entry_resp.status_code == 200:
@@ -209,6 +216,13 @@ class UnisonProvider(BaseLyricsProvider):
             fb_resp = _HTTP_SESSION.get(_LRCLIB_FALLBACK_GET, params=fb_params, timeout=5.0)
             if fb_resp.status_code == 200:
                 data = fb_resp.json()
+                cand_song = data.get("trackName") or data.get("name") or data.get("track_name") or ""
+                cand_artist = data.get("artistName") or data.get("artist") or ""
+                cand_dur = int(round(float(data.get("duration", 0) or 0) * 1000)) if data.get("duration") else duration_ms
+                if cand_song:
+                    fb_score = score_candidate(artist, title, duration_ms, cand_artist, cand_song, cand_dur)
+                    if fb_score < 70.0:
+                        return None
                 parsed = _process_lyrics_data(data)
                 if parsed:
                     return parsed
