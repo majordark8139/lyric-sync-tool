@@ -6,14 +6,14 @@ import unittest
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtGui import QKeyEvent, QPaintEvent
 from PySide6.QtWidgets import QApplication
 
 from core.models import LyricLine, SongLyrics, SyllableSpan, SyncState, TaggingConfig, TrackItem
 from gui.app import MainWindow
 from gui.editor_widget import LyricsEditorWidget
-from gui.preview_widget import KaraokePreviewWidget
+from gui.preview_widget import KaraokePreviewWidget, _KaraokeCanvas
 from gui.settings_dialog import TaggingSettingsDialog
 from gui.themes import THEMES
 
@@ -353,6 +353,57 @@ class TestPaintStability(unittest.TestCase):
             self.widget._canvas.repaint()
 
         self.assertEqual(self.widget._canvas._current_ms, 29984)
+
+    def test_paint_event_no_none_refcount_leak(self) -> None:
+        """Simulate 1,000 consecutive calls to paintEvent and verify refcount of None does not drain."""
+        canvas = _KaraokeCanvas()
+        canvas.resize(800, 600)
+
+        lyrics = SongLyrics(
+            metadata={"ti": "Eyesight", "ar": "Composer Test"},
+            lines=[
+                LyricLine(start_ms=0, end_ms=0, text="Composed by Someone"),
+                LyricLine(start_ms=0, end_ms=0, text="Lyrics by Someone Else"),
+                LyricLine(
+                    start_ms=1000,
+                    end_ms=3000,
+                    syllables=[
+                        SyllableSpan(abs_start_ms=1000, abs_end_ms=2000, text="Lead "),
+                        SyllableSpan(abs_start_ms=2000, abs_end_ms=3000, text="Line"),
+                    ],
+                    background_text="(bg vocal)",
+                ),
+                LyricLine(
+                    start_ms=3500,
+                    end_ms=5000,
+                    syllables=[
+                        SyllableSpan(abs_start_ms=3500, abs_end_ms=4200, text="Second "),
+                        SyllableSpan(abs_start_ms=4200, abs_end_ms=5000, text="Line"),
+                    ],
+                    background_syllables=[
+                        SyllableSpan(abs_start_ms=3600, abs_end_ms=4900, text="(Ad-lib)"),
+                    ],
+                ),
+                LyricLine(start_ms=6000, end_ms=8000, text="Plain Line Sync"),
+                LyricLine(start_ms=9000, end_ms=10000, text=""),  # empty line
+            ],
+            is_word_synced=True,
+        )
+        canvas.set_lyrics(lyrics)
+
+        ev = QPaintEvent(QRect(0, 0, 800, 600))
+        ref_start = sys.getrefcount(None)
+        for t in range(0, 10000, 10):
+            canvas._current_ms = t
+            canvas.paintEvent(ev)
+        ref_end = sys.getrefcount(None)
+
+        canvas.deleteLater()
+        self.assertGreaterEqual(
+            ref_end,
+            ref_start - 5,
+            f"Reference count of None drained significantly: {ref_start} -> {ref_end} (diff: {ref_end - ref_start})",
+        )
 
 
 class TestAlbumGroupedTree(unittest.TestCase):

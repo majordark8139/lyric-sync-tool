@@ -1,12 +1,13 @@
 """Constant-speed 60 FPS syllable color sweep preview widget with real audio playback."""
 
+import ctypes
 import os
 import sys
 import time
 from typing import Optional
 
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QKeyEvent, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QKeyEvent, QPainter, QPixmap, QPen
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -18,6 +19,80 @@ from PySide6.QtWidgets import (
 )
 
 from core.models import LyricLine, SongLyrics
+
+try:
+    _Py_IncRef = ctypes.pythonapi.Py_IncRef
+    _Py_IncRef.argtypes = [ctypes.py_object]
+    _Py_IncRef.restype = None
+except Exception:
+    _Py_IncRef = None
+
+# Shiboken6 void-return bug mitigation: Shiboken returns Py_None without Py_INCREF for void C++ methods,
+# causing CPython to decref None on statement pop until none_dealloc triggers.
+if _Py_IncRef is not None and not getattr(QPainter, "_none_dealloc_patched", False):
+    QPainter._none_dealloc_patched = True
+
+    _orig_setFont = QPainter.setFont
+    def _safe_setFont(self, f=None):
+        if f is None:
+            f = QFont("sans-serif", 10)
+        _orig_setFont(self, f)
+        _Py_IncRef(None)
+    QPainter.setFont = _safe_setFont
+
+    _orig_setPen = QPainter.setPen
+    def _safe_setPen(self, pen=None):
+        if pen is None:
+            pen = QPen(Qt.PenStyle.NoPen)
+        _orig_setPen(self, pen)
+        _Py_IncRef(None)
+    QPainter.setPen = _safe_setPen
+
+    _orig_setRenderHint = QPainter.setRenderHint
+    def _safe_setRenderHint(self, hint, on=True):
+        _orig_setRenderHint(self, hint, on)
+        _Py_IncRef(None)
+    QPainter.setRenderHint = _safe_setRenderHint
+
+    _orig_save = QPainter.save
+    def _safe_save(self):
+        _orig_save(self)
+        _Py_IncRef(None)
+    QPainter.save = _safe_save
+
+    _orig_restore = QPainter.restore
+    def _safe_restore(self):
+        _orig_restore(self)
+        _Py_IncRef(None)
+    QPainter.restore = _safe_restore
+
+    _orig_setClipRect = QPainter.setClipRect
+    def _safe_setClipRect(self, *args, **kwargs):
+        _orig_setClipRect(self, *args, **kwargs)
+        _Py_IncRef(None)
+    QPainter.setClipRect = _safe_setClipRect
+
+    _orig_drawText = QPainter.drawText
+    def _safe_drawText(self, *args):
+        if args:
+            new_args = list(args)
+            if isinstance(new_args[-1], (str, type(None))):
+                new_args[-1] = str(new_args[-1] or "")
+            return _orig_drawText(self, *new_args)
+        return _orig_drawText(self, *args)
+    QPainter.drawText = _safe_drawText
+
+    _orig_update = QWidget.update
+    def _safe_update(self, *args, **kwargs):
+        _orig_update(self, *args, **kwargs)
+        _Py_IncRef(None)
+    QWidget.update = _safe_update
+
+    _orig_repaint = QWidget.repaint
+    def _safe_repaint(self, *args, **kwargs):
+        _orig_repaint(self, *args, **kwargs)
+        _Py_IncRef(None)
+    QWidget.repaint = _safe_repaint
 
 
 def _format_time(ms: int) -> str:
@@ -36,6 +111,7 @@ class _KaraokeCanvas(QWidget):
         super().__init__(parent)
         self._lyrics: Optional[SongLyrics] = None
         self._current_ms: int = 0
+        self._fallback_pixmap: Optional[QPixmap] = None
 
         self._base_font = QFont("sans-serif", 13)
         self._active_font = QFont("sans-serif", 14, QFont.Bold)
@@ -71,18 +147,35 @@ class _KaraokeCanvas(QWidget):
         """Alias for set_time(pos_ms) used by soak and stability tests."""
         self.set_time(pos_ms, is_playing=True)
 
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
+    def paintEvent(self, event, custom_painter: Optional[QPainter] = None) -> None:
+        owns_painter = custom_painter is None
+        painter = custom_painter if custom_painter is not None else QPainter(self)
+        if owns_painter and not painter.isActive():
+            if self._fallback_pixmap is None or self._fallback_pixmap.size() != self.size():
+                self._fallback_pixmap = QPixmap(max(1, self.width()), max(1, self.height()))
+            painter = QPainter(self._fallback_pixmap)
+
         try:
+            if not painter.isActive():
+                return
+
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
             width = self.width()
             height = self.height()
 
+            base_font = self._base_font or self.font()
+            dim_pen = self._dim_pen or QPen(Qt.PenStyle.NoPen)
+            past_line_pen = self._past_line_pen or dim_pen
+            sub_base_font = self._sub_base_font or base_font
+            sub_active_font = self._sub_active_font or base_font
+            sub_dim_pen = self._sub_dim_pen or dim_pen
+            sub_highlight_pen = self._sub_highlight_pen or (self._highlight_pen or dim_pen)
+
             if not self._lyrics or not self._lyrics.lines:
-                painter.setFont(self._base_font)
-                painter.setPen(self._dim_pen)
+                painter.setFont(base_font)
+                painter.setPen(dim_pen)
                 rect = QRect(0, 0, int(width), int(height))
                 painter.drawText(
                     rect,
@@ -128,7 +221,8 @@ class _KaraokeCanvas(QWidget):
                 if y < -line_height or y > height + line_height:
                     continue
 
-                line_text = line.text or "".join(s.text for s in line.syllables)
+                raw_line_text = line.text if line.text is not None else "".join(getattr(s, "text", "") for s in line.syllables)
+                line_text = str(raw_line_text or "").strip()
                 if not line_text:
                     continue
 
@@ -144,20 +238,21 @@ class _KaraokeCanvas(QWidget):
 
                     # Background vocal directly beneath active lead line
                     if line.has_background:
-                        bg_text = line.background_text or "".join(s.text for s in line.background_syllables).strip()
+                        raw_bg = line.background_text or "".join(getattr(s, "text", "") for s in line.background_syllables)
+                        bg_text = str(raw_bg or "").strip()
                         if bg_text:
                             sub_y = y + 20.0
                             if is_word_synced and line.background_syllables:
                                 self._draw_word_synced_line(
                                     painter, line, bg_text, sub_y,
-                                    float(width), 20.0, self._sub_active_font, self._sub_dim_pen,
+                                    float(width), 20.0, sub_active_font, sub_dim_pen,
                                     syllables=line.background_syllables,
-                                    highlight_pen=self._sub_highlight_pen,
+                                    highlight_pen=sub_highlight_pen,
                                 )
                             else:
                                 self._draw_line_synced_active(
                                     painter, bg_text, sub_y, float(width), 20.0,
-                                    self._sub_active_font, self._sub_highlight_pen,
+                                    sub_active_font, sub_highlight_pen,
                                 )
                     elif not line.is_background:
                         active_bg: Optional[LyricLine] = None
@@ -166,44 +261,47 @@ class _KaraokeCanvas(QWidget):
                                 active_bg = bg
                                 break
                         if active_bg is not None:
-                            sub_text = active_bg.text or "".join(s.text for s in active_bg.syllables).strip()
+                            raw_sub = active_bg.text or "".join(getattr(s, "text", "") for s in active_bg.syllables)
+                            sub_text = str(raw_sub or "").strip()
                             if sub_text:
                                 sub_y = y + 20.0
                                 if is_word_synced and active_bg.syllables:
                                     self._draw_word_synced_line(
                                         painter, active_bg, sub_text, sub_y,
-                                        float(width), 20.0, self._sub_active_font, self._sub_dim_pen,
-                                        highlight_pen=self._sub_highlight_pen,
+                                        float(width), 20.0, sub_active_font, sub_dim_pen,
+                                        highlight_pen=sub_highlight_pen,
                                     )
                                 else:
                                     self._draw_line_synced_active(
                                         painter, sub_text, sub_y, float(width), 20.0,
-                                        self._sub_active_font, self._sub_highlight_pen,
+                                        sub_active_font, sub_highlight_pen,
                                     )
                 else:
-                    painter.setFont(self._base_font)
-                    pen = self._past_line_pen if i < active_idx else self._dim_pen
+                    painter.setFont(base_font)
+                    pen = past_line_pen if i < active_idx else dim_pen
                     painter.setPen(pen)
-                    fm = QFontMetricsF(self._base_font)
+                    fm = QFontMetricsF(base_font)
                     text_width = fm.horizontalAdvance(line_text)
                     x = max(10.0, (float(width) - text_width) / 2.0)
                     baseline_y = y + fm.ascent() / 2.0
-                    painter.drawText(int(x), int(baseline_y), str(line_text))
+                    painter.drawText(int(x), int(baseline_y), line_text)
 
                     # Inactive background vocal display
                     if line.has_background:
-                        bg_text = line.background_text or "".join(s.text for s in line.background_syllables).strip()
+                        raw_bg = line.background_text or "".join(getattr(s, "text", "") for s in line.background_syllables)
+                        bg_text = str(raw_bg or "").strip()
                         if bg_text:
                             sub_y = y + 20.0
-                            painter.setFont(self._sub_base_font)
-                            painter.setPen(self._sub_dim_pen)
-                            sub_fm = QFontMetricsF(self._sub_base_font)
+                            painter.setFont(sub_base_font)
+                            painter.setPen(sub_dim_pen)
+                            sub_fm = QFontMetricsF(sub_base_font)
                             sub_text_w = sub_fm.horizontalAdvance(bg_text)
                             sub_x = max(10.0, (float(width) - sub_text_w) / 2.0)
                             sub_baseline_y = sub_y + sub_fm.ascent() / 2.0
-                            painter.drawText(int(sub_x), int(sub_baseline_y), str(bg_text))
+                            painter.drawText(int(sub_x), int(sub_baseline_y), bg_text)
         finally:
-            painter.end()
+            if owns_painter and painter.isActive():
+                painter.end()
 
     def _draw_line_synced_active(
         self,
@@ -220,15 +318,16 @@ class _KaraokeCanvas(QWidget):
         No character-level interpolation; the full line lights up solidly while
         ``line.start_ms <= current_ms <= line.end_ms``.
         """
-        f = font if font is not None else self._active_font
-        p = pen if pen is not None else self._highlight_pen
+        f = font if font is not None else (self._active_font or self.font())
+        p = pen if pen is not None else (self._highlight_pen or QPen(Qt.PenStyle.NoPen))
         painter.setFont(f)
         painter.setPen(p)
+        safe_text = str(line_text or "")
         fm = QFontMetricsF(f)
-        text_width = fm.horizontalAdvance(line_text)
+        text_width = fm.horizontalAdvance(safe_text)
         x = max(10.0, (view_width - text_width) / 2.0)
         baseline_y = y + fm.ascent() / 2.0
-        painter.drawText(int(x), int(baseline_y), str(line_text))
+        painter.drawText(int(x), int(baseline_y), safe_text)
 
     def _draw_word_synced_line(
         self,
@@ -252,35 +351,40 @@ class _KaraokeCanvas(QWidget):
             clip width = sum_of_completed_widths + alpha * width_k
         - Future syllables (abs_start_ms > current_ms): dimmed base colour.
         """
-        f = font if font is not None else self._active_font
-        dp = dim_pen if dim_pen is not None else self._dim_pen
-        hp = highlight_pen if highlight_pen is not None else self._highlight_pen
-        syls = syllables if syllables is not None else line.syllables
+        f = font if font is not None else (self._active_font or self.font())
+        dp = dim_pen if dim_pen is not None else (self._dim_pen or QPen(Qt.PenStyle.NoPen))
+        hp = highlight_pen if highlight_pen is not None else (self._highlight_pen or QPen(Qt.PenStyle.NoPen))
+        syls = syllables if syllables is not None else (line.syllables if line is not None else [])
+        syls = syls or []
 
+        safe_text = str(line_text or "")
         fm = QFontMetricsF(f)
-        text_width = fm.horizontalAdvance(line_text)
+        text_width = fm.horizontalAdvance(safe_text)
         x_start = max(10.0, (view_width - text_width) / 2.0)
         baseline_y = y + fm.ascent() / 2.0
 
         # 1. Draw full line in dim colour as base layer
         painter.setFont(f)
         painter.setPen(dp)
-        painter.drawText(int(x_start), int(baseline_y), str(line_text))
+        painter.drawText(int(x_start), int(baseline_y), safe_text)
 
         # 2. Compute exact pixel sweep position across syllables
         cursor_x = x_start
         sweep_x = x_start
 
         for syl in syls:
-            syl_w = fm.horizontalAdvance(syl.text)
-            if self._current_ms >= syl.abs_end_ms:
+            syl_text = str(getattr(syl, "text", "") or "")
+            syl_w = fm.horizontalAdvance(syl_text)
+            abs_end_ms = getattr(syl, "abs_end_ms", 0)
+            abs_start_ms = getattr(syl, "abs_start_ms", 0)
+            if self._current_ms >= abs_end_ms:
                 # Syllable fully completed
                 sweep_x = cursor_x + syl_w
                 cursor_x += syl_w
-            elif self._current_ms >= syl.abs_start_ms:
+            elif self._current_ms >= abs_start_ms:
                 # Active syllable: linear sub-pixel interpolation
-                dur = max(1, syl.abs_end_ms - syl.abs_start_ms)
-                alpha = min(1.0, max(0.0, (self._current_ms - syl.abs_start_ms) / dur))
+                dur = max(1, abs_end_ms - abs_start_ms)
+                alpha = min(1.0, max(0.0, (self._current_ms - abs_start_ms) / dur))
                 sweep_x = cursor_x + (syl_w * alpha)
                 break
             else:
@@ -299,7 +403,7 @@ class _KaraokeCanvas(QWidget):
                 )
                 painter.setClipRect(clip_rect, Qt.ClipOperation.ReplaceClip)
                 painter.setPen(hp)
-                painter.drawText(int(x_start), int(baseline_y), str(line_text))
+                painter.drawText(int(x_start), int(baseline_y), safe_text)
             finally:
                 painter.restore()
 
