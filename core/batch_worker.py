@@ -174,14 +174,17 @@ class BatchTaggerWorker(QThread):
                 try:
                     self.track_progress.emit(idx, "Applying tags...", track)
                     apply_lyrics(track.file_path, lyrics, config=self._config)
-                    track.sync_state = detect_sync_state(track.file_path)
+                    actual_type = "WORD" if lyrics.is_word_synced else "LINE"
+                    track.sync_state = actual_type
+                    track.status = f"Tagged ({actual_type})"
                     track.matched_lyrics = lyrics
-                    status_text = "Tagged (WORD)" if track.sync_state == SyncState.WORD else "Tagged"
-                    self.track_progress.emit(idx, status_text, track)
+                    self.track_progress.emit(idx, track.status, track)
                 except Exception as e:
-                    self.track_progress.emit(idx, f"Apply Error: {e}", track)
+                    track.status = f"Apply Error: {e}"
+                    self.track_progress.emit(idx, track.status, track)
             else:
-                self.track_progress.emit(idx, "No Word Sync Found", track)
+                track.status = "No Word Sync Found"
+                self.track_progress.emit(idx, track.status, track)
 
             self.overall_progress.emit(idx + 1, total)
 

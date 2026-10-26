@@ -492,6 +492,113 @@ class TestMultiProviders(unittest.TestCase):
             self.assertIsNotNone(res)
             self.assertGreater(len(res.lines), 0)
 
+    def test_unison_ttml_richsync_parsing(self) -> None:
+        from unittest.mock import MagicMock, patch
+        from core.providers.unison import UnisonProvider
+
+        xml = (
+            '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata">'
+            '<p begin="00:00:27.780" end="00:00:28.720">'
+            '<span begin="00:00:27.780" end="00:00:27.960">She </span>'
+            '<span begin="00:00:27.960" end="00:00:28.220">tryna </span>'
+            '<span begin="00:00:28.220" end="00:00:28.510">dance </span>'
+            '<span begin="00:00:28.510" end="00:00:28.660">for </span>'
+            '<span begin="00:00:28.660" end="00:00:28.720">me </span>'
+            '<span ttm:role="x-bg">(Let\'s go)</span>'
+            '</p></tt>'
+        )
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "format": "ttml",
+            "syncType": "richsync",
+            "lyrics": xml,
+        }
+
+        p = UnisonProvider()
+        with patch("core.providers.unison._HTTP_SESSION.get", return_value=mock_resp):
+            res = p.search_word_sync("dance", "slayr", 28000)
+            self.assertIsNotNone(res)
+            self.assertTrue(res.is_word_synced)
+            self.assertEqual(len(res.lines[0].syllables), 5)
+            self.assertEqual(res.lines[0].background_text, "(Let's go)")
+
+    def test_unison_linesync_clears_syllables_and_forces_not_word_synced(self) -> None:
+        from unittest.mock import MagicMock, patch
+        from core.providers.unison import UnisonProvider
+
+        fake_lrc = "[00:01.00]<00:01.00>Hel<00:01.40>lo [00:02.00]<00:02.00>World\n"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "format": "lrc",
+            "syncType": "linesync",
+            "lyrics": fake_lrc,
+        }
+
+        p = UnisonProvider()
+        with patch("core.providers.unison._HTTP_SESSION.get", return_value=mock_resp):
+            res = p.search_word_sync("Song", "Artist", 120000)
+            self.assertIsNotNone(res)
+            self.assertFalse(res.is_word_synced)
+            self.assertEqual(len(res.lines[0].syllables), 0)
+
+
+class TestTtmlParserAndWordSyncGuardrail(unittest.TestCase):
+    """Tests for core/ttml_parser.py and strict word sync validation in core/models.py."""
+
+    def test_ttml_parser_with_slayr_snippet(self) -> None:
+        from core.ttml_parser import parse_ttml
+
+        xml = (
+            '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata">'
+            '<p begin="00:00:27.780" end="00:00:28.720">'
+            '<span begin="00:00:27.780" end="00:00:27.960">She </span>'
+            '<span begin="00:00:27.960" end="00:00:28.220">tryna </span>'
+            '<span begin="00:00:28.220" end="00:00:28.510">dance </span>'
+            '<span begin="00:00:28.510" end="00:00:28.660">for </span>'
+            '<span begin="00:00:28.660" end="00:00:28.720">me </span>'
+            '<span ttm:role="x-bg">(Let\'s go)</span>'
+            '</p></tt>'
+        )
+        lyrics = parse_ttml(xml)
+        self.assertTrue(lyrics.is_word_synced)
+        self.assertEqual(len(lyrics.lines[0].syllables), 5)
+        self.assertEqual(lyrics.lines[0].background_text, "(Let's go)")
+
+    def test_dummy_single_syllable_guardrail(self) -> None:
+        from core.models import LyricLine, SongLyrics, Syllable
+
+        line = LyricLine(
+            start_ms=0,
+            text="Full line text",
+            syllables=[Syllable(text="Full line text", start_ms=0, duration_ms=3000)],
+        )
+        s = SongLyrics(lines=[line], is_word_synced=True)
+        self.assertFalse(s.is_word_synced, "1-syllable whole-line must not evaluate to word sync")
+
+    def test_batch_worker_status_and_sync_state(self) -> None:
+        from core.models import LyricLine, SongLyrics, Syllable, SyncState, TrackItem
+
+        line = LyricLine(
+            start_ms=0,
+            text="One Two",
+            syllables=[
+                Syllable(text="One ", start_ms=0, duration_ms=500),
+                Syllable(text="Two", start_ms=500, duration_ms=500),
+            ],
+        )
+        word_lyrics = SongLyrics(lines=[line], is_word_synced=True)
+        track = TrackItem(file_path="dummy.mp3", title="Song", artist="Artist", duration_ms=2000)
+
+        actual_type = "WORD" if word_lyrics.is_word_synced else "LINE"
+        track.sync_state = actual_type
+        track.status = f"Tagged ({actual_type})"
+
+        self.assertEqual(track.sync_state, SyncState.WORD)
+        self.assertEqual(track.status, "Tagged (WORD)")
+
 
 if __name__ == "__main__":
     unittest.main()
+

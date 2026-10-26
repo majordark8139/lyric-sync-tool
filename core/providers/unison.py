@@ -1,4 +1,4 @@
-"""Unison lyrics provider — structured client for Unison lyrics endpoints."""
+"""Unison lyrics provider — structured client for Unison and Better Lyrics endpoints."""
 
 import urllib.parse
 from typing import Any, Dict, List, Optional
@@ -7,21 +7,19 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
-from core.models import SongLyrics, TaggingConfig
+from core.matcher import score_candidate
+from core.models import LyricLine, SongLyrics, TaggingConfig
 from core.normalizer import extract_primary_artist, strip_features
 from core.providers.base import BaseLyricsProvider
 from core.tagger import _parse_lrc_text
+from core.ttml_parser import parse_ttml
 
-_UNISON_GET_URL = "https://api.unison.red/api/get"
-_UNISON_SEARCH_URL = "https://api.unison.red/api/search"
+_UNISON_BASE_URL = "https://unison.boidu.dev"
+_UNISON_SEARCH_URL = f"{_UNISON_BASE_URL}/lyrics/search"
 _LRCLIB_FALLBACK_GET = "https://lrclib.net/api/get"
 
 _HEADERS: Dict[str, str] = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": "Noctis (https://github.com/heartached/Noctis)",
     "Accept": "application/json",
 }
 
@@ -38,8 +36,54 @@ _HTTP_SESSION.mount("http://", _adapter)
 _HTTP_SESSION.headers.update(_HEADERS)
 
 
+def _process_lyrics_data(data: Dict[str, Any]) -> Optional[SongLyrics]:
+    """Parse raw lyrics response dict into SongLyrics respecting format and syncType."""
+    raw_lyrics = (
+        data.get("lyrics")
+        or data.get("syncedLyrics")
+        or data.get("plainLyrics")
+    )
+    if not raw_lyrics:
+        return None
+
+    fmt = str(data.get("format", "")).strip().lower()
+    sync_type = str(data.get("syncType", "")).strip().lower()
+
+    if fmt == "ttml" or "<tt" in raw_lyrics:
+        parsed = parse_ttml(raw_lyrics)
+    elif fmt == "lrc" or ("[" in raw_lyrics and ("]" in raw_lyrics or "<" in raw_lyrics)):
+        parsed = _parse_lrc_text(raw_lyrics)
+    else:
+        lines = [
+            LyricLine(start_ms=0, end_ms=0, text=l.strip(), syllables=[])
+            for l in raw_lyrics.splitlines()
+            if l.strip()
+        ]
+        parsed = SongLyrics(lines=lines, is_word_synced=False)
+
+    if not parsed or not parsed.lines:
+        return None
+
+    if sync_type == "linesync":
+        for line in parsed.lines:
+            line.syllables = []
+        parsed.is_word_synced = False
+    elif sync_type == "richsync":
+        if not parsed.is_word_synced:
+            # If discrete syllable tokens are missing, fall back to line sync
+            for line in parsed.lines:
+                line.syllables = []
+            parsed.is_word_synced = False
+    elif sync_type == "plain":
+        for line in parsed.lines:
+            line.syllables = []
+        parsed.is_word_synced = False
+
+    return parsed
+
+
 class UnisonProvider(BaseLyricsProvider):
-    """Lyrics provider backed by Unison lyrics service with structured error and timeout handling."""
+    """Lyrics provider backed by Unison service supporting richsync TTML and LRC."""
 
     @property
     def name(self) -> str:
@@ -76,45 +120,98 @@ class UnisonProvider(BaseLyricsProvider):
             return None
 
         primary_artist = extract_primary_artist(artist)
+        query = f"{primary_artist} {title}".strip() if primary_artist else title.strip()
         duration_sec = int(round(duration_ms / 1000.0)) if duration_ms > 0 else 0
 
-        params: Dict[str, str] = {
-            "track_name": title,
-            "artist_name": primary_artist,
-        }
-        if duration_sec > 0:
-            params["duration"] = str(duration_sec)
-
-        # ── 1. Query primary Unison endpoint ──
-        for endpoint in (_UNISON_GET_URL, _LRCLIB_FALLBACK_GET):
-            try:
-                resp = _HTTP_SESSION.get(endpoint, params=params, timeout=5.0)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    synced_lrc = data.get("syncedLyrics")
-                    if synced_lrc:
-                        parsed = _parse_lrc_text(synced_lrc)
-                        if parsed and parsed.lines:
-                            return parsed
-            except Exception:
-                continue
-
-        # ── 2. Query search endpoint fallback ──
+        # ── 1. Query Unison search endpoint ──
         try:
-            s_params: Dict[str, str] = {
-                "track_name": strip_features(title),
+            params = {"q": query, "limit": "20"}
+            resp = _HTTP_SESSION.get(_UNISON_SEARCH_URL, params=params, timeout=5.0)
+            if resp.status_code == 200:
+                data = resp.json()
+
+                # Check if response is a direct lyrics object (e.g. mocked or direct)
+                if isinstance(data, dict):
+                    if "lyrics" in data or "syncedLyrics" in data:
+                        parsed = _process_lyrics_data(data)
+                        if parsed:
+                            return parsed
+
+                    data_obj = data.get("data")
+                    if isinstance(data_obj, dict) and ("lyrics" in data_obj or "syncedLyrics" in data_obj):
+                        parsed = _process_lyrics_data(data_obj)
+                        if parsed:
+                            return parsed
+
+                    hits = data_obj if isinstance(data_obj, list) else data.get("results", [])
+                elif isinstance(data, list):
+                    hits = data
+                else:
+                    hits = []
+
+                best_hit = None
+                best_score = -1.0
+
+                for hit in hits:
+                    if not isinstance(hit, dict):
+                        continue
+                    if hit.get("hidden") is True:
+                        continue
+
+                    hit_id = hit.get("id")
+                    if not hit_id:
+                        continue
+
+                    hit_song = hit.get("song", "")
+                    hit_artist = hit.get("artist", "")
+                    hit_dur_sec = float(hit.get("duration", 0) or 0)
+                    hit_dur_ms = int(round(hit_dur_sec * 1000)) if hit_dur_sec > 0 else duration_ms
+
+                    score = score_candidate(
+                        audio_artist=artist,
+                        audio_title=title,
+                        audio_duration_ms=duration_ms,
+                        cand_artist=hit_artist,
+                        cand_title=hit_song,
+                        cand_duration_ms=hit_dur_ms,
+                    )
+
+                    # Boost richsync hits
+                    if str(hit.get("syncType", "")).lower() == "richsync":
+                        score += 5.0
+
+                    if score > best_score:
+                        best_score = score
+                        best_hit = hit
+
+                if best_hit and best_score >= 60.0:
+                    entry_url = f"{_UNISON_BASE_URL}/lyrics/{best_hit['id']}"
+                    entry_resp = _HTTP_SESSION.get(entry_url, timeout=5.0)
+                    if entry_resp.status_code == 200:
+                        entry_data = entry_resp.json()
+                        inner = entry_data.get("data") if isinstance(entry_data, dict) and "data" in entry_data else entry_data
+                        if isinstance(inner, dict):
+                            parsed = _process_lyrics_data(inner)
+                            if parsed:
+                                return parsed
+        except Exception:
+            pass
+
+        # ── 2. Fallback to LRCLib endpoint ──
+        try:
+            fb_params: Dict[str, str] = {
+                "track_name": title,
                 "artist_name": primary_artist,
             }
-            s_resp = _HTTP_SESSION.get(_UNISON_SEARCH_URL, params=s_params, timeout=5.0)
-            if s_resp.status_code == 200:
-                data = s_resp.json()
-                items: List[Dict[str, Any]] = data if isinstance(data, list) else data.get("results", [])
-                for item in items:
-                    synced_lrc = item.get("syncedLyrics")
-                    if synced_lrc:
-                        parsed = _parse_lrc_text(synced_lrc)
-                        if parsed and parsed.lines:
-                            return parsed
+            if duration_sec > 0:
+                fb_params["duration"] = str(duration_sec)
+
+            fb_resp = _HTTP_SESSION.get(_LRCLIB_FALLBACK_GET, params=fb_params, timeout=5.0)
+            if fb_resp.status_code == 200:
+                data = fb_resp.json()
+                parsed = _process_lyrics_data(data)
+                if parsed:
+                    return parsed
         except Exception:
             pass
 
