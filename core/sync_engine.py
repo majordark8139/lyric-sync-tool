@@ -27,7 +27,10 @@ def to_plain_text(song: SongLyrics) -> str:
     """
     out_lines: List[str] = []
     for line in song.lines:
-        out_lines.append("".join(s.text for s in line.syllables))
+        full_text = line.text or "".join(s.text for s in line.syllables).strip()
+        if line.background_text and line.background_text not in full_text:
+            full_text = f"{full_text} {line.background_text}".strip()
+        out_lines.append(full_text)
     return "\n".join(out_lines)
 
 
@@ -282,33 +285,45 @@ def to_enhanced_lrc(song: SongLyrics) -> str:
         out.append(f"[{key}:{value}]")
 
     for line in song.lines:
-        if not line.syllables:
-            if line.text:
-                out.append(f"[{_ms_to_lrc(line.start_ms)}]{line.text}")
+        spans: List[SyllableSpan] = list(line.syllables)
+
+        if line.background_syllables:
+            spans = sorted(spans + list(line.background_syllables), key=lambda s: s.abs_start_ms)
+        elif line.background_text:
+            if spans:
+                last = spans[-1]
+                if line.background_text not in last.text and line.background_text not in (line.text or ""):
+                    recombined = f"{last.text.strip()} {line.background_text.strip()}"
+                    spans = spans[:-1] + [
+                        SyllableSpan(
+                            abs_start_ms=last.abs_start_ms,
+                            abs_end_ms=line.background_end_ms or last.abs_end_ms,
+                            text=recombined,
+                        )
+                    ]
+
+        if not spans:
+            full_text = line.text or ""
+            if line.background_text and line.background_text not in full_text:
+                full_text = f"{full_text} {line.background_text}".strip()
+            if full_text:
+                out.append(f"[{_ms_to_lrc(line.start_ms)}]{full_text}")
             else:
                 out.append(f"[{_ms_to_lrc(line.start_ms)}]")
-            if line.background_text:
-                out.append(f"[bg: {line.background_text}]")
             continue
 
         line_tag = f"[{_ms_to_lrc(line.start_ms)}]"
-        body_parts: List[str] = []
-        for span in line.syllables:
-            body_parts.append(f"<{_ms_to_lrc(span.abs_start_ms)}>{span.text}")
-        # trailing end-of-line timestamp
-        last_end = line.syllables[-1].abs_end_ms
-        body_parts.append(f"<{_ms_to_lrc(last_end)}>")
-        out.append(line_tag + " ".join(body_parts))
-
-        if line.background_syllables:
-            bg_parts: List[str] = []
-            for span in line.background_syllables:
-                bg_parts.append(f"<{_ms_to_lrc(span.abs_start_ms)}>{span.text}")
-            bg_end = line.background_end_ms or line.background_syllables[-1].abs_end_ms
-            bg_parts.append(f"<{_ms_to_lrc(bg_end)}>")
-            out.append(f"[bg: {' '.join(bg_parts)}]")
-        elif line.background_text:
-            out.append(f"[bg: {line.background_text}]")
+        body = ""
+        for idx, span in enumerate(spans):
+            tag = f"<{_ms_to_lrc(span.abs_start_ms)}>"
+            if idx > 0 and not body.endswith(" "):
+                body += " "
+            body += tag + span.text
+        last_end = spans[-1].abs_end_ms
+        if not body.endswith(" "):
+            body += " "
+        body += f"<{_ms_to_lrc(last_end)}>"
+        out.append(line_tag + body)
 
     return "\n".join(out)
 

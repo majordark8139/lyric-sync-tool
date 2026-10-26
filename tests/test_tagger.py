@@ -680,9 +680,20 @@ class TestNoctisBackgroundVocals(unittest.TestCase):
         self.assertEqual(line.background_text, "(Background)")
         self.assertEqual(len(line.background_syllables), 2)
 
-        # Verify to_enhanced_lrc exports [bg: ...]
+        # Verify to_enhanced_lrc recombines inline background vocals without [bg:]
         exported = to_enhanced_lrc(parsed)
-        self.assertIn("[bg: <00:25.50>(Back <00:26.50>ground) <00:27.50>]", exported)
+        self.assertIn("(Back", exported)
+        self.assertIn("ground)", exported)
+        self.assertNotIn("[bg:", exported)
+
+    def test_serialization_preserves_inline_background_text(self) -> None:
+        from core.tagger import _parse_lrc_text
+        from core.sync_engine import to_enhanced_lrc
+        lrc = "[00:27.00] She tryna dance for me (Let's go)"
+        parsed = _parse_lrc_text(lrc)
+        out = to_enhanced_lrc(parsed)
+        self.assertIn("(Let's go)", out)
+        self.assertNotIn("[bg:", out)
 
 
 if __name__ == "__main__":
