@@ -183,7 +183,7 @@ class BatchTaggerWorker(QThread):
                     track.status = f"Apply Error: {e}"
                     self.track_progress.emit(idx, track.status, track)
             else:
-                track.status = "No Word Sync Found"
+                track.status = "No Word Sync Available"
                 self.track_progress.emit(idx, track.status, track)
 
             self.overall_progress.emit(idx + 1, total)

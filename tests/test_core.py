@@ -486,8 +486,11 @@ class TestMultiProviders(unittest.TestCase):
             self.assertGreater(len(res.lines), 0)
 
         # Test UnisonProvider
+        mock_unison = MagicMock()
+        mock_unison.status_code = 200
+        mock_unison.json.return_value = {"syncedLyrics": fake_lrc, "syncType": "richsync"}
         p_unison = UnisonProvider()
-        with patch("core.providers.unison._HTTP_SESSION.get", return_value=mock_resp):
+        with patch("core.providers.unison._HTTP_SESSION.get", return_value=mock_unison):
             res = p_unison.search_word_sync("Song", "Artist", 120000)
             self.assertIsNotNone(res)
             self.assertGreater(len(res.lines), 0)
@@ -523,11 +526,11 @@ class TestMultiProviders(unittest.TestCase):
             self.assertEqual(len(res.lines[0].syllables), 5)
             self.assertEqual(res.lines[0].background_text, "(Let's go)")
 
-    def test_unison_linesync_clears_syllables_and_forces_not_word_synced(self) -> None:
+    def test_unison_linesync_rejects_and_returns_none(self) -> None:
         from unittest.mock import MagicMock, patch
         from core.providers.unison import UnisonProvider
 
-        fake_lrc = "[00:01.00]<00:01.00>Hel<00:01.40>lo [00:02.00]<00:02.00>World\n"
+        fake_lrc = "[00:01.00] Line one\n[00:05.00] Line two\n"
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
@@ -539,9 +542,22 @@ class TestMultiProviders(unittest.TestCase):
         p = UnisonProvider()
         with patch("core.providers.unison._HTTP_SESSION.get", return_value=mock_resp):
             res = p.search_word_sync("Song", "Artist", 120000)
-            self.assertIsNotNone(res)
-            self.assertFalse(res.is_word_synced)
-            self.assertEqual(len(res.lines[0].syllables), 0)
+            self.assertIsNone(res)
+
+    def test_unison_requests_get_mock_strict_word_sync(self) -> None:
+        from unittest.mock import patch
+        from core.providers.unison import UnisonProvider
+
+        p = UnisonProvider()
+        with patch("requests.get") as mock_get:
+            mock_get.return_value.status_code = 200
+            mock_get.return_value.json.side_effect = [
+                {"results": [{"id": 1, "title": "Test Track", "artist": "Artist", "duration": 180}]},
+                {"syncType": "linesync", "format": "lrc", "lyrics": "[00:01.00] Line one\n[00:05.00] Line two"}
+            ]
+            res = p.search_word_sync("Artist", "Test Track", 180000)
+            self.assertIsNone(res)
+
 
 
 class TestTtmlParserAndWordSyncGuardrail(unittest.TestCase):
@@ -616,8 +632,24 @@ class TestTtmlParserAndWordSyncGuardrail(unittest.TestCase):
         score = score_candidate("slayr", "Track 1", 145000, "slayr", "Sloppy Joe", 146000)
         self.assertLess(score, 70.0)
 
+    def test_batch_worker_no_word_sync_available(self) -> None:
+        from unittest.mock import MagicMock
+        from core.batch_worker import BatchTaggerWorker
+        from core.models import SyncState, TaggingConfig, TrackItem
+
+        track = TrackItem(file_path="dummy.flac", title="Track 1", artist="slayr", duration_ms=180000, sync_state=SyncState.LINE)
+        mock_provider = MagicMock()
+        mock_provider.search_word_sync.return_value = None
+
+        worker = BatchTaggerWorker([track], TaggingConfig(), provider=mock_provider)
+        worker.run()
+
+        self.assertEqual(track.status, "No Word Sync Available")
+        self.assertEqual(track.sync_state, SyncState.LINE)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
