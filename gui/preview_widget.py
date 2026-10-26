@@ -1,6 +1,5 @@
 """Constant-speed 60 FPS syllable color sweep preview widget with real audio playback."""
 
-import ctypes
 import os
 import sys
 import time
@@ -19,11 +18,6 @@ from PySide6.QtWidgets import (
 )
 
 from core.models import LyricLine, SongLyrics
-
-_Py_IncRef = ctypes.pythonapi.Py_IncRef
-_Py_IncRef.argtypes = [ctypes.c_void_p]
-_Py_IncRef.restype = None
-_NONE_PTR = id(None)
 
 
 def _format_time(ms: int) -> str:
@@ -74,20 +68,7 @@ class _KaraokeCanvas(QWidget):
         """Alias for set_time(pos_ms) used by soak and stability tests."""
         self.set_time(pos_ms, is_playing=True)
 
-    def update(self, *args, **kwargs) -> None:
-        super().update(*args, **kwargs)
-        _Py_IncRef(_NONE_PTR)
-
-    def repaint(self, *args, **kwargs) -> None:
-        super().repaint(*args, **kwargs)
-        _Py_IncRef(_NONE_PTR)
-
-    def render(self, *args, **kwargs) -> None:
-        super().render(*args, **kwargs)
-        _Py_IncRef(_NONE_PTR)
-
     def paintEvent(self, event) -> None:
-        rc_entry = sys.getrefcount(None)
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -190,10 +171,6 @@ class _KaraokeCanvas(QWidget):
                     painter.drawText(int(x), int(baseline_y), str(line_text))
         finally:
             painter.end()
-            diff = rc_entry - sys.getrefcount(None)
-            while diff > 0:
-                _Py_IncRef(_NONE_PTR)
-                diff -= 1
 
     def _draw_line_synced_active(
         self,

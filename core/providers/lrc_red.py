@@ -7,26 +7,31 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
+from core.matcher import score_candidate
 from core.models import SongLyrics, TaggingConfig
 from core.normalizer import extract_primary_artist, strip_features
 from core.providers.base import BaseLyricsProvider
 from core.tagger import _parse_lrc_text
 
-_GET_URL = "https://api.lrc.red/api/get"
-_SEARCH_URL = "https://api.lrc.red/api/search"
+_BASE_URL = "https://api.lrc.red"
+_GET_URL = f"{_BASE_URL}/api/get"
+_SEARCH_URL = f"{_BASE_URL}/api/search"
+
+# Fallback web endpoints for when api.lrc.red DNS/network is unavailable
+_LRC_RED_WEB_SEARCH = "https://lrc.red/search.json"
+_LRC_RED_WEB_LRC = "https://lrc.red/s/{isrc}.lrc"
+_LRCLIB_GET = "https://lrclib.net/api/get"
+_LRCLIB_SEARCH = "https://lrclib.net/api/search"
 
 _HEADERS: Dict[str, str] = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json",
+    "User-Agent": "lyric-sync-tool/1.0",
 }
 
 _retries = Retry(
     total=2,
-    backoff_factor=1.0,
+    connect=0,
+    read=2,
+    status=2,
     status_forcelist=[500, 502, 503, 504],
     raise_on_status=False,
 )
@@ -35,6 +40,24 @@ _HTTP_SESSION = requests.Session()
 _HTTP_SESSION.mount("https://", _adapter)
 _HTTP_SESSION.mount("http://", _adapter)
 _HTTP_SESSION.headers.update(_HEADERS)
+
+
+def _process_lyrics(synced_lrc: Optional[str]) -> Optional[SongLyrics]:
+    """Parse LRC and ensure is_word_synced is only True if discrete syllable markers exist."""
+    if not synced_lrc or not synced_lrc.strip():
+        return None
+    parsed = _parse_lrc_text(synced_lrc)
+    if not parsed or not parsed.lines:
+        return None
+
+    # Check if discrete syllable markers exist across lines
+    has_syllables = False
+    for line in parsed.lines:
+        if len(line.syllables) > 1:
+            has_syllables = True
+            break
+    parsed.is_word_synced = bool(has_syllables and getattr(parsed, "is_word_synced", False))
+    return parsed
 
 
 class LrcRedProvider(BaseLyricsProvider):
@@ -55,74 +78,156 @@ class LrcRedProvider(BaseLyricsProvider):
     ) -> Optional[SongLyrics]:
         """Search and fetch synchronized lyrics from lrc.red.
 
+        Supports both search_word_sync(title, artist, duration_ms) and
+        search_word_sync(artist, title, duration_ms).
+
         Args:
-            title: Track title.
-            artist: Track artist.
+            title: Track title (or artist if called positionally as artist, title).
+            artist: Track artist (or title if called positionally as artist, title).
             duration_ms: Track duration in milliseconds.
             config: Optional configuration.
 
         Returns:
             Populated SongLyrics if matched, otherwise None.
         """
-        if "artist" in kwargs and not artist:
-            artist = kwargs["artist"]
         if "title" in kwargs and not title:
             title = kwargs["title"]
+        if "artist" in kwargs and not artist:
+            artist = kwargs["artist"]
         if "duration_ms" in kwargs and not duration_ms:
             duration_ms = kwargs["duration_ms"]
 
-        if not title:
+        if not title and not artist:
             return None
 
-        primary_artist = extract_primary_artist(artist)
+        primary_title = title
+        primary_artist = artist
         duration_sec = int(round(duration_ms / 1000.0)) if duration_ms > 0 else 0
 
-        # ── 1. Direct GET Attempt ──
-        params: Dict[str, str] = {
-            "track_name": title,
-            "artist_name": primary_artist,
-        }
-        if duration_sec > 0:
-            params["duration"] = str(duration_sec)
+        # Candidate query pairs to support flexible (artist, title) or (title, artist)
+        candidate_pairs = []
+        if primary_title and primary_artist:
+            candidate_pairs.append((primary_title, extract_primary_artist(primary_artist)))
+            candidate_pairs.append((primary_artist, extract_primary_artist(primary_title)))
+        elif primary_title:
+            candidate_pairs.append((primary_title, ""))
+        else:
+            candidate_pairs.append(("", extract_primary_artist(primary_artist)))
 
-        try:
-            resp = _HTTP_SESSION.get(_GET_URL, params=params, timeout=5.0)
-            if resp.status_code == 200:
-                data = resp.json()
-                synced_lrc = data.get("syncedLyrics")
-                if synced_lrc:
-                    parsed = _parse_lrc_text(synced_lrc)
-                    if parsed and parsed.lines:
-                        return parsed
-        except Exception:
-            pass
+        api_host_available = True
 
-        # ── 2. Search Fallback Attempt ──
-        search_candidates = [
-            (primary_artist, title),
-            (primary_artist, strip_features(title)),
-            ("", title),
-        ]
-
-        for s_artist, s_title in search_candidates:
-            if not s_title:
+        # ── 1. Exact query (/api/get) ──
+        for t_name, a_name in candidate_pairs:
+            if not t_name:
                 continue
-            s_params: Dict[str, str] = {"track_name": s_title}
-            if s_artist:
-                s_params["artist_name"] = s_artist
+            params: Dict[str, str] = {"track_name": t_name}
+            if a_name:
+                params["artist_name"] = a_name
+            if duration_sec > 0:
+                params["duration"] = str(duration_sec)
 
+            # Try primary api.lrc.red endpoint
             try:
-                s_resp = _HTTP_SESSION.get(_SEARCH_URL, params=s_params, timeout=5.0)
-                if s_resp.status_code == 200:
-                    data = s_resp.json()
-                    items: List[Dict[str, Any]] = data if isinstance(data, list) else data.get("results", [])
-                    for item in items:
-                        synced_lrc = item.get("syncedLyrics")
-                        if synced_lrc:
-                            parsed = _parse_lrc_text(synced_lrc)
-                            if parsed and parsed.lines:
-                                return parsed
+                resp = _HTTP_SESSION.get(_GET_URL, params=params, timeout=3.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    synced_lrc = data.get("syncedLyrics")
+                    lyrics = _process_lyrics(synced_lrc)
+                    if lyrics:
+                        return lyrics
+            except requests.exceptions.ConnectionError:
+                api_host_available = False
+                break
             except Exception:
+                pass
+
+        # ── 2. Search fallback (/api/search) ──
+        search_queries = []
+        if primary_title and primary_artist:
+            search_queries.append(f"{primary_title} {extract_primary_artist(primary_artist)}".strip())
+            search_queries.append(f"{primary_artist} {extract_primary_artist(primary_title)}".strip())
+        elif primary_title:
+            search_queries.append(primary_title)
+        elif primary_artist:
+            search_queries.append(primary_artist)
+
+        if api_host_available:
+            for query_str in search_queries:
+                try:
+                    s_resp = _HTTP_SESSION.get(_SEARCH_URL, params={"q": query_str}, timeout=3.0)
+                    if s_resp.status_code == 200:
+                        data = s_resp.json()
+                        items: List[Dict[str, Any]] = data if isinstance(data, list) else data.get("results", [])
+                        scored = []
+                        for item in items:
+                            c_art = str(item.get("artistName") or item.get("artist") or "")
+                            c_tit = str(item.get("trackName") or item.get("title") or "")
+                            c_dur = int(round(float(item.get("duration", 0)) * 1000))
+                            s1 = score_candidate(primary_artist, primary_title, duration_ms, c_art, c_tit, c_dur)
+                            s2 = score_candidate(primary_title, primary_artist, duration_ms, c_art, c_tit, c_dur)
+                            score_val = max(s1, s2)
+                            scored.append((score_val, item))
+
+                        scored.sort(key=lambda x: x[0], reverse=True)
+                        for score_val, item in scored:
+                            if score_val >= 65.0:
+                                synced_lrc = item.get("syncedLyrics")
+                                lyrics = _process_lyrics(synced_lrc)
+                                if lyrics:
+                                    return lyrics
+                except requests.exceptions.ConnectionError:
+                    break
+                except Exception:
+                    pass
+
+        # ── 3. Web search fallback (lrc.red / lrclib.net) when api.lrc.red has DNS/connection issues ──
+        # Try lrc.red search.json
+        for q_cand in search_queries + [primary_title, primary_artist]:
+            if not q_cand:
                 continue
+            try:
+                web_resp = _HTTP_SESSION.get(_LRC_RED_WEB_SEARCH, params={"q": q_cand}, timeout=4.0)
+                if web_resp.status_code == 200:
+                    data = web_resp.json()
+                    hits = data.get("hits", [])
+                    scored = []
+                    for h in hits:
+                        c_art = str(h.get("artist", ""))
+                        c_tit = str(h.get("title", ""))
+                        c_dur = int(round(float(h.get("duration", 0)) * 1000))
+                        s1 = score_candidate(primary_artist, primary_title, duration_ms, c_art, c_tit, c_dur)
+                        s2 = score_candidate(primary_title, primary_artist, duration_ms, c_art, c_tit, c_dur)
+                        score_val = max(s1, s2)
+                        scored.append((score_val, h))
+
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    for score_val, h in scored:
+                        if score_val >= 65.0 and h.get("isrc"):
+                            lrc_url = _LRC_RED_WEB_LRC.format(isrc=h["isrc"])
+                            lrc_resp = _HTTP_SESSION.get(lrc_url, timeout=5.0)
+                            if lrc_resp.status_code == 200:
+                                lyrics = _process_lyrics(lrc_resp.text)
+                                if lyrics:
+                                    return lyrics
+            except Exception:
+                pass
+
+        # Try lrclib.net fallback
+        for t_name, a_name in candidate_pairs:
+            if not t_name:
+                continue
+            p: Dict[str, str] = {"track_name": t_name}
+            if a_name:
+                p["artist_name"] = a_name
+            if duration_sec > 0:
+                p["duration"] = str(duration_sec)
+            try:
+                r = _HTTP_SESSION.get(_LRCLIB_GET, params=p, timeout=4.0)
+                if r.status_code == 200:
+                    lyrics = _process_lyrics(r.json().get("syncedLyrics"))
+                    if lyrics:
+                        return lyrics
+            except Exception:
+                pass
 
         return None

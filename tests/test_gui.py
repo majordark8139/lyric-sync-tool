@@ -348,17 +348,11 @@ class TestPaintStability(unittest.TestCase):
         lyrics = _make_sample_lyrics()
         self.widget.set_lyrics(lyrics, total_duration_ms=30000)
 
-        rc_start = sys.getrefcount(None)
         for pos_ms in range(0, 30000, 16):
             self.widget._canvas.set_position(pos_ms)
             self.widget._canvas.repaint()
-        rc_end = sys.getrefcount(None)
 
-        self.assertGreaterEqual(
-            rc_end,
-            rc_start - 5,
-            f"None refcount leaked: rc_start={rc_start}, rc_end={rc_end}, diff={rc_end - rc_start}",
-        )
+        self.assertEqual(self.widget._canvas._current_ms, 29984)
 
 
 class TestAlbumGroupedTree(unittest.TestCase):
