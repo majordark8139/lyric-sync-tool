@@ -17,17 +17,20 @@ class Syllable:
     text: str = ""
     start_ms: int = 0
     duration_ms: int = 0
+    tail: str = ""
 
     def __init__(
         self,
         text: str = "",
         start_ms: int = 0,
         duration_ms: int = 0,
+        tail: str = "",
         *,
         abs_start_ms: Optional[int] = None,
         abs_end_ms: Optional[int] = None,
     ):
         self.text = text
+        self.tail = tail
         if abs_start_ms is not None:
             self.start_ms = abs_start_ms
         else:
@@ -62,6 +65,7 @@ class SyllableSpan:
     abs_start_ms: int
     abs_end_ms: int
     text: str
+    tail: str = ""
 
     @property
     def start_ms(self) -> int:
@@ -144,7 +148,10 @@ class LyricLine:
         if self._text is not None:
             return self._text
         if self.syllables:
-            return "".join(getattr(s, "text", "") for s in self.syllables).strip()
+            return "".join(
+                (getattr(s, "text", "") or "") + (getattr(s, "tail", "") or "")
+                for s in self.syllables
+            ).strip()
         return ""
 
     @text.setter
@@ -224,7 +231,7 @@ class SongLyrics:
 
         # 1. Any line enclosed in parentheses is classified as background vocal
         for line in self.lines:
-            text = "".join(getattr(s, "text", "") for s in line.syllables).strip()
+            text = line.text
             if (text.startswith("(") and text.endswith(")")) or (
                 text.startswith("（") and text.endswith("）")
             ):
@@ -238,15 +245,15 @@ class SongLyrics:
                     current_lead = line
                 continue
 
-            text = "".join(getattr(s, "text", "") for s in line.syllables).strip()
-            lead_text = "".join(getattr(s, "text", "") for s in current_lead.syllables).strip()
+            text = line.text
+            lead_text = current_lead.text
 
             prev = self.lines[i - 1]
             overlaps = (line.start_ms < current_lead.end_ms) or (line.start_ms < prev.end_ms)
 
             if overlaps:
                 # If overlapping line has identical text as lead line, flag as echo layer
-                if text and (text == lead_text or text == "".join(getattr(s, "text", "") for s in prev.syllables).strip()):
+                if text and (text == lead_text or text == prev.text):
                     line.is_background = True
                     continue
 

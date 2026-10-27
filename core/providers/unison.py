@@ -114,6 +114,13 @@ class UnisonProvider(BaseLyricsProvider):
         combined = f"{clean_artist} {clean_title}".strip()
         if combined:
             queries.append(combined)
+
+        primary = extract_primary_artist(clean_artist).strip()
+        if primary and primary != clean_artist:
+            p_combined = f"{primary} {clean_title}".strip()
+            if p_combined and p_combined not in queries:
+                queries.append(p_combined)
+
         if clean_title and clean_title not in queries:
             queries.append(clean_title)
         if clean_artist and clean_artist not in queries:
@@ -227,8 +234,8 @@ class UnisonProvider(BaseLyricsProvider):
                             if result is not None:
                                 return result
 
-                # Candidates were found and verified not to have richsync
-                return None
+                # Candidates were found and verified not to have richsync; try next query
+                continue
 
             except Exception:
                 continue

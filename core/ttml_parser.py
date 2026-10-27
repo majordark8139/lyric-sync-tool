@@ -95,9 +95,8 @@ def _extract_parenthetical_bg(
 def _format_span_text(
     spans: List[ET.Element],
     index: int,
-    punctuation: str = ".,!?;:'\")-]}、。！？，…",
 ) -> str:
-    """Combine span text and XML tail whitespace, preserving single space delimiters."""
+    """Combine span text and XML tail whitespace according to XML whitespace rules."""
     elem = spans[index]
     word = elem.text or ""
     tail = elem.tail or ""
@@ -106,21 +105,11 @@ def _format_span_text(
     has_word_space = any(c.isspace() for c in word[-1:]) if word else False
 
     if has_word_space:
-        text_with_tail = word
+        return word
     elif has_tail_space:
-        text_with_tail = word + " "
+        return word + " "
     else:
-        text_with_tail = word + tail
-
-    # If text_with_tail does not end with space, and is followed by another span
-    # that doesn't start with punctuation, preserve a single space delimiter
-    if not text_with_tail.endswith(" ") and index < len(spans) - 1:
-        next_elem = spans[index + 1]
-        next_word = (next_elem.text or "").lstrip()
-        if next_word and next_word[0] not in punctuation:
-            text_with_tail = text_with_tail + " "
-
-    return text_with_tail
+        return word + tail
 
 
 def parse_ttml(xml_content: str) -> SongLyrics:
@@ -194,32 +183,42 @@ def parse_ttml(xml_content: str) -> SongLyrics:
                 bg_spans = [child for child in child_spans if _is_bg_role(child)]
 
             for i, child in enumerate(lead_spans):
-                formatted_text = _format_span_text(lead_spans, i)
+                syl_text = child.text or ""
+                syl_tail = child.tail or ""
+                if any(c.isspace() for c in syl_tail):
+                    syl_tail = " "
+                if syl_text.endswith(" ") and syl_tail == " ":
+                    syl_tail = ""
                 if i == 0:
-                    m = _SINGER_PREFIX_RE.match(formatted_text)
+                    m = _SINGER_PREFIX_RE.match(syl_text)
                     if m:
                         if not singer_id:
                             singer_id = m.group(1).lower()
-                        formatted_text = _SINGER_PREFIX_RE.sub("", formatted_text)
+                        syl_text = _SINGER_PREFIX_RE.sub("", syl_text)
                 span_start = parse_time(child.attrib.get("begin", str(line_start)))
                 span_end = parse_time(child.attrib.get("end", str(span_start)))
                 duration = max(0, span_end - span_start)
                 syllables.append(
-                    Syllable(text=formatted_text, start_ms=span_start, duration_ms=duration)
+                    Syllable(text=syl_text, start_ms=span_start, duration_ms=duration, tail=syl_tail)
                 )
 
             for bg_child in bg_spans:
                 sub_spans = [gc for gc in bg_child if _local_tag(gc) == "span"]
                 if sub_spans:
                     for j, gc in enumerate(sub_spans):
-                        gc_formatted = _format_span_text(sub_spans, j)
+                        gc_text = gc.text or ""
+                        gc_tail = gc.tail or ""
+                        if any(c.isspace() for c in gc_tail):
+                            gc_tail = " "
+                        if gc_text.endswith(" ") and gc_tail == " ":
+                            gc_tail = ""
                         gc_start = parse_time(gc.attrib.get("begin", str(line_start)))
                         gc_end = parse_time(gc.attrib.get("end", str(gc_start)))
                         gc_dur = max(0, gc_end - gc_start)
                         bg_syllables.append(
-                            Syllable(text=gc_formatted, start_ms=gc_start, duration_ms=gc_dur)
+                            Syllable(text=gc_text, start_ms=gc_start, duration_ms=gc_dur, tail=gc_tail)
                         )
-                        bg_text_parts.append(gc_formatted)
+                        bg_text_parts.append(gc_text + gc_tail)
                 else:
                     txt = (bg_child.text or "").strip()
                     if txt:
@@ -237,7 +236,10 @@ def parse_ttml(xml_content: str) -> SongLyrics:
                 if paren_bg:
                     syllables = clean_lead
                     bg_syllables = paren_bg
-                    bg_text_parts = [s.text for s in paren_bg]
+                    bg_text_parts = [
+                        (s.text or "") + (getattr(s, "tail", "") or "")
+                        for s in paren_bg
+                    ]
 
             bg_text = "".join(bg_text_parts).strip() if bg_text_parts else None
 
@@ -245,7 +247,10 @@ def parse_ttml(xml_content: str) -> SongLyrics:
                 agents[singer_id] = singer_id
 
             if syllables:
-                full_text = "".join(s.text for s in syllables).strip()
+                full_text = "".join(
+                    (s.text or "") + (getattr(s, "tail", "") or "")
+                    for s in syllables
+                ).strip()
                 full_text = _SINGER_PREFIX_RE.sub("", full_text)
                 if not line_end:
                     line_end = max(s.abs_end_ms for s in syllables)

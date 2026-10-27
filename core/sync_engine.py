@@ -404,7 +404,8 @@ def to_ttml(song: SongLyrics) -> str:
             sb = _ms_to_ttml(span.abs_start_ms)
             se = _ms_to_ttml(span.abs_end_ms)
             clean_s = _SINGER_PREFIX_RE.sub("", span.text) if idx == 0 else span.text
-            escaped = xml_escape(clean_s)
+            tail = getattr(span, "tail", "") or ""
+            escaped = xml_escape(clean_s + tail)
             spans.append(f'<span begin="{sb}" end="{se}">{escaped}</span>')
 
         if not spans and line.text:
@@ -417,7 +418,9 @@ def to_ttml(song: SongLyrics) -> str:
             for span in line.background_syllables:
                 sb = _ms_to_ttml(span.abs_start_ms)
                 se = _ms_to_ttml(span.abs_end_ms)
-                escaped = xml_escape(span.text)
+                clean_s = getattr(span, "text", "") or ""
+                tail = getattr(span, "tail", "") or ""
+                escaped = xml_escape(clean_s + tail)
                 bg_spans.append(f'<span begin="{sb}" end="{se}">{escaped}</span>')
         elif line.background_text:
             bg_start_ms = line.syllables[-1].abs_end_ms if line.syllables else line.start_ms

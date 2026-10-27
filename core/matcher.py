@@ -85,13 +85,26 @@ def _compute_artist_similarity(audio_artist: str, cand_artist: str) -> float:
     return float(max(0.0, min(1.0, ratio)))
 
 
+def compute_title_similarity(audio_title: str, cand_title: str) -> float:
+    """Compute normalized title similarity between audio track title and candidate title."""
+    clean_audio = clean_kugou_query(audio_title).lower() or audio_title.strip().lower()
+    clean_cand = clean_kugou_query(cand_title).lower() or cand_title.strip().lower()
+
+    if clean_audio and clean_cand:
+        return float(difflib.SequenceMatcher(None, clean_audio, clean_cand).ratio())
+    elif not clean_audio and not clean_cand:
+        return 1.0
+    return 0.0
+
+
 def score_candidate(
     audio_artist: str,
     audio_title: str,
-    audio_duration_ms: int,
-    cand_artist: str,
-    cand_title: str,
-    cand_duration_ms: int,
+    audio_duration_ms: int = 0,
+    cand_artist: str = "",
+    cand_title: str = "",
+    cand_duration_ms: int = 0,
+    **kwargs,
 ) -> float:
     """Compute a composite soft match score (0 to 100) between audio track and candidate.
 
@@ -100,7 +113,8 @@ def score_candidate(
          Clamped delta dt = |audio_duration_ms - cand_duration_ms|.
          Full 40 pts if dt <= 1500 ms; linear drop to 0 pts at dt = 4000 ms.
       2. Title Similarity (0 to 40 pts):
-         difflib.SequenceMatcher ratio between cleaned titles * 40.
+         Hard rejection floor: if compute_title_similarity < 0.60, returns 0.0 immediately.
+         Otherwise title_similarity * 40 pts.
       3. Primary Artist Presence & Collaboration Similarity (0 to 20 pts):
          _compute_artist_similarity * 20 pts.
 
@@ -111,10 +125,16 @@ def score_candidate(
         cand_artist: Candidate artist name from search results.
         cand_title: Candidate title from search results.
         cand_duration_ms: Candidate duration in milliseconds.
+        **kwargs: Optional alias arguments (audio_dur_ms, cand_dur_ms).
 
     Returns:
-        Composite score out of 100.0.
+        Composite score out of 100.0 (or 0.0 if failing title floor).
     """
+    if "audio_dur_ms" in kwargs and not audio_duration_ms:
+        audio_duration_ms = kwargs["audio_dur_ms"]
+    if "cand_dur_ms" in kwargs and not cand_duration_ms:
+        cand_duration_ms = kwargs["cand_dur_ms"]
+
     # ── 1. Duration Score (0 to 40 pts) ──
     if audio_duration_ms <= 0 or cand_duration_ms <= 0:
         duration_score = 0.0
@@ -130,19 +150,12 @@ def score_candidate(
 
     duration_score = max(0.0, min(40.0, duration_score))
 
-    # ── 2. Title Similarity (0 to 40 pts) ──
-    clean_audio = clean_kugou_query(audio_title).lower() or audio_title.strip().lower()
-    clean_cand = clean_kugou_query(cand_title).lower() or cand_title.strip().lower()
+    # ── 2. Title Similarity & Hard Floor (0 to 40 pts) ──
+    title_sim = compute_title_similarity(audio_title, cand_title)
+    if title_sim < 0.60:
+        return 0.0
 
-    if clean_audio and clean_cand:
-        ratio = difflib.SequenceMatcher(None, clean_audio, clean_cand).ratio()
-        title_score = ratio * 40.0
-    elif not clean_audio and not clean_cand:
-        title_score = 40.0
-    else:
-        title_score = 0.0
-
-    title_score = max(0.0, min(40.0, title_score))
+    title_score = max(0.0, min(40.0, title_sim * 40.0))
 
     # ── 3. Artist Similarity (0 to 20 pts) ──
     artist_ratio = _compute_artist_similarity(audio_artist, cand_artist)

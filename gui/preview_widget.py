@@ -397,7 +397,7 @@ class _KaraokeCanvas(QWidget):
         sweep_x = x_start
 
         for idx, syl in enumerate(syls):
-            syl_text = str(getattr(syl, "text", "") or "")
+            syl_text = str(getattr(syl, "text", "") or "") + str(getattr(syl, "tail", "") or "")
             if idx == 0:
                 syl_text = _SINGER_PREFIX_RE.sub("", syl_text)
             syl_w = fm.horizontalAdvance(syl_text)

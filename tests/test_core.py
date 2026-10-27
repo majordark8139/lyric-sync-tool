@@ -773,10 +773,10 @@ class TestTtmlParserAndWordSyncGuardrail(unittest.TestCase):
         lyrics1 = parse_ttml(xml1)
         self.assertEqual(lyrics1.lines[0].text, "Don't tell me what you owe")
 
-        # 2. Glued spans without tail whitespace
-        xml2 = """<tt xmlns="http://www.w3.org/ns/ttml"><p begin="00:00:00.000" end="00:00:03.000"><span>Dive</span><span>in</span><span>that</span><span>pussy</span><span>blind</span></p></tt>"""
+        # 2. Syllables in multi-syllable words concatenate naturally without injected spaces
+        xml2 = """<tt xmlns="http://www.w3.org/ns/ttml"><p begin="00:00:00.000" end="00:00:03.000"><span>fee</span><span>ling </span><span>a</span><span>bout </span><span>Ken</span><span>drick</span></p></tt>"""
         lyrics2 = parse_ttml(xml2)
-        self.assertEqual(lyrics2.lines[0].text, "Dive in that pussy blind")
+        self.assertEqual(lyrics2.lines[0].text, "feeling about Kendrick")
 
     def test_unison_candidate_score_rejection(self) -> None:
         from core.matcher import score_candidate

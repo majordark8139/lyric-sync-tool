@@ -258,6 +258,67 @@ class TestDuetParsingAndOppositeAlignment(unittest.TestCase):
         self.assertIn('ttm:agent="v2"', out)
 
 
+class TestTitleFloorAndCollaborationMatching(unittest.TestCase):
+    """Test hard title-similarity floor and collaboration candidate matching for Pray For Me."""
+
+    def test_hard_title_similarity_floor_rejects_backseat_freestyle(self) -> None:
+        from core.matcher import compute_title_similarity, score_candidate
+
+        sim = compute_title_similarity("Pray For Me", "Backseat Freestyle")
+        self.assertLess(sim, 0.60)
+
+        # Even with matching artist and duration, score MUST be 0.0
+        score = score_candidate(
+            audio_artist="Kendrick Lamar",
+            audio_title="Pray For Me",
+            audio_duration_ms=211000,
+            cand_artist="Kendrick Lamar",
+            cand_title="Backseat Freestyle",
+            cand_duration_ms=211000,
+        )
+        self.assertEqual(score, 0.0)
+
+    def test_pray_for_me_collaboration_candidate_scoring(self) -> None:
+        from core.matcher import score_candidate
+
+        # Audio file tagged with primary artist or full collaboration
+        score_full = score_candidate(
+            audio_artist="The Weeknd, Kendrick Lamar",
+            audio_title="Pray For Me",
+            audio_duration_ms=211000,
+            cand_artist="The Weeknd, Kendrick Lamar",
+            cand_title="Pray For Me",
+            cand_duration_ms=211000,
+        )
+        self.assertGreaterEqual(score_full, 80.0)
+
+        score_lead = score_candidate(
+            audio_artist="Kendrick Lamar",
+            audio_title="Pray For Me",
+            audio_duration_ms=211000,
+            cand_artist="The Weeknd, Kendrick Lamar",
+            cand_title="Pray For Me",
+            cand_duration_ms=211000,
+        )
+        self.assertGreaterEqual(score_lead, 80.0)
+
+    def test_syllable_spacing_without_internal_spaces(self) -> None:
+        from core.ttml_parser import parse_ttml
+
+        xml = """<tt xmlns="http://www.w3.org/ns/ttml">
+<body><div>
+<p begin="00:00:01.000" end="00:00:04.000">
+<span>fee</span><span>ling </span>
+<span>a</span><span>bout </span>
+<span>a</span><span>ny</span><span>thing </span>
+<span>e</span><span>ve</span><span>ry</span><span>thing </span>
+<span>Ken</span><span>drick</span>
+</p>
+</div></body></tt>"""
+        lyrics = parse_ttml(xml)
+        self.assertEqual(lyrics.lines[0].text, "feeling about anything everything Kendrick")
+
+
 if __name__ == "__main__":
     unittest.main()
 
