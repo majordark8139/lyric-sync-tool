@@ -216,8 +216,8 @@ class TestKugouLadderSearch(unittest.TestCase):
                     # Return candidates: one krctype=1 and one krctype=2
                     return {
                         "candidates": [
-                            {"id": "c1", "accesskey": "k1", "duration": 210000, "score": 100, "krctype": 1},
-                            {"id": "c2", "accesskey": "k2", "duration": 210000, "score": 90, "krctype": 2},
+                            {"id": "c1", "accesskey": "k1", "duration": 210000, "score": 100, "krctype": 1, "song": "Save Your Tears (Remix)", "singer": "The Weeknd"},
+                            {"id": "c2", "accesskey": "k2", "duration": 210000, "score": 90, "krctype": 2, "song": "Save Your Tears (Remix)", "singer": "The Weeknd"},
                         ]
                     }
                 return {"candidates": []}

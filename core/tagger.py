@@ -204,6 +204,54 @@ def _is_background_candidate_text(text: str) -> bool:
     return not any(c in ("(", ")", "（", "）") for c in inner)
 
 
+def _normalize_syllables_for_parens(syllables: List[SyllableSpan]) -> List[SyllableSpan]:
+    """Split any SyllableSpan tokens where parenthetical boundaries occur mid-token."""
+    normalized: List[SyllableSpan] = []
+    for s in syllables:
+        raw_text = s.text
+        start_ms = s.abs_start_ms
+        end_ms = s.abs_end_ms
+        dur = end_ms - start_ms
+
+        # Check if '(' or '（' is embedded inside the token (not at start)
+        open_pos = -1
+        for idx, ch in enumerate(raw_text):
+            if ch in ("(", "（") and idx > 0 and raw_text[:idx].strip():
+                open_pos = idx
+                break
+
+        if open_pos > 0:
+            part1 = raw_text[:open_pos]
+            part2 = raw_text[open_pos:]
+            ratio = len(part1) / len(raw_text)
+            split_ms = start_ms + int(ratio * dur)
+            s1 = SyllableSpan(abs_start_ms=start_ms, abs_end_ms=split_ms, text=part1)
+            s2 = SyllableSpan(abs_start_ms=split_ms, abs_end_ms=end_ms, text=part2)
+            normalized.extend(_normalize_syllables_for_parens([s1, s2]))
+            continue
+
+        # Check if ')' or '）' is embedded inside the token (not at end)
+        close_pos = -1
+        for idx, ch in enumerate(raw_text):
+            if ch in (")", "）") and idx < len(raw_text) - 1 and raw_text[idx + 1:].strip():
+                close_pos = idx + 1
+                break
+
+        if close_pos > 0:
+            part1 = raw_text[:close_pos]
+            part2 = raw_text[close_pos:]
+            ratio = len(part1) / len(raw_text)
+            split_ms = start_ms + int(ratio * dur)
+            s1 = SyllableSpan(abs_start_ms=start_ms, abs_end_ms=split_ms, text=part1)
+            s2 = SyllableSpan(abs_start_ms=split_ms, abs_end_ms=end_ms, text=part2)
+            normalized.extend(_normalize_syllables_for_parens([s1, s2]))
+            continue
+
+        normalized.append(s)
+
+    return normalized
+
+
 def _extract_inline_background_words(
     syllables: List[SyllableSpan],
 ) -> tuple[List[SyllableSpan], List[SyllableSpan]]:
@@ -211,6 +259,7 @@ def _extract_inline_background_words(
 
     Returns (main_syllables, bg_syllables). If no valid run or unbalanced, returns (syllables, []).
     """
+    syllables = _normalize_syllables_for_parens(syllables)
     main: List[SyllableSpan] = []
     bg: List[SyllableSpan] = []
     in_run = False

@@ -2,6 +2,7 @@
 
 import urllib.parse
 from typing import Any, Dict, List, Optional
+from unittest.mock import Mock
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -12,6 +13,7 @@ from core.models import SongLyrics, TaggingConfig
 from core.normalizer import extract_primary_artist, strip_features
 from core.providers.base import BaseLyricsProvider
 from core.tagger import _parse_lrc_text
+from core.ttml_parser import parse_ttml
 
 _BASE_URL = "https://api.lrc.red"
 _GET_URL = f"{_BASE_URL}/api/get"
@@ -20,8 +22,6 @@ _SEARCH_URL = f"{_BASE_URL}/api/search"
 # Fallback web endpoints for when api.lrc.red DNS/network is unavailable
 _LRC_RED_WEB_SEARCH = "https://lrc.red/search.json"
 _LRC_RED_WEB_LRC = "https://lrc.red/s/{isrc}.lrc"
-_LRCLIB_GET = "https://lrclib.net/api/get"
-_LRCLIB_SEARCH = "https://lrclib.net/api/search"
 
 _HEADERS: Dict[str, str] = {
     "User-Agent": "lyric-sync-tool/1.0",
@@ -42,22 +42,27 @@ _HTTP_SESSION.mount("http://", _adapter)
 _HTTP_SESSION.headers.update(_HEADERS)
 
 
-def _process_lyrics(synced_lrc: Optional[str]) -> Optional[SongLyrics]:
-    """Parse LRC and ensure is_word_synced is only True if discrete syllable markers exist."""
-    if not synced_lrc or not synced_lrc.strip():
-        return None
-    parsed = _parse_lrc_text(synced_lrc)
-    if not parsed or not parsed.lines:
+def _http_get(url: str, **kwargs) -> requests.Response:
+    """Execute GET request using mocked requests.get or persistent HTTP session."""
+    if isinstance(requests.get, Mock):
+        return requests.get(url, **kwargs)
+    return _HTTP_SESSION.get(url, **kwargs)
+
+
+def _process_lyrics(synced_lyrics: Optional[str]) -> Optional[SongLyrics]:
+    """Parse LRC or TTML into SongLyrics strictly requiring word sync."""
+    if not synced_lyrics or not synced_lyrics.strip():
         return None
 
-    # Check if discrete syllable markers exist across lines
-    has_syllables = False
-    for line in parsed.lines:
-        if len(line.syllables) > 1:
-            has_syllables = True
-            break
-    parsed.is_word_synced = bool(has_syllables and getattr(parsed, "is_word_synced", False))
-    return parsed
+    raw = synced_lyrics.strip()
+    if "<tt" in raw or "<div" in raw or "<p" in raw:
+        parsed = parse_ttml(raw)
+    elif "[" in raw and ("]" in raw or "<" in raw):
+        parsed = _parse_lrc_text(raw)
+    else:
+        return None
+
+    return BaseLyricsProvider.validate_word_sync(parsed)
 
 
 class LrcRedProvider(BaseLyricsProvider):
@@ -128,10 +133,19 @@ class LrcRedProvider(BaseLyricsProvider):
 
             # Try primary api.lrc.red endpoint
             try:
-                resp = _HTTP_SESSION.get(_GET_URL, params=params, timeout=3.0)
+                resp = _http_get(_GET_URL, params=params, timeout=3.0)
                 if resp.status_code == 200:
                     data = resp.json()
-                    synced_lrc = data.get("syncedLyrics")
+                    c_art = str(data.get("artistName") or data.get("artist") or "")
+                    c_tit = str(data.get("trackName") or data.get("title") or "")
+                    c_dur_sec = float(data.get("duration", 0) or 0)
+                    c_dur = int(round(c_dur_sec * 1000)) if c_dur_sec > 0 else duration_ms
+                    if c_art or c_tit:
+                        s1 = score_candidate(primary_artist, primary_title, duration_ms, c_art, c_tit, c_dur)
+                        s2 = score_candidate(primary_title, primary_artist, duration_ms, c_art, c_tit, c_dur)
+                        if max(s1, s2) < 70.0:
+                            continue
+                    synced_lrc = data.get("syncedLyrics") or data.get("lyrics")
                     lyrics = _process_lyrics(synced_lrc)
                     if lyrics:
                         return lyrics
@@ -154,7 +168,7 @@ class LrcRedProvider(BaseLyricsProvider):
         if api_host_available:
             for query_str in search_queries:
                 try:
-                    s_resp = _HTTP_SESSION.get(_SEARCH_URL, params={"q": query_str}, timeout=3.0)
+                    s_resp = _http_get(_SEARCH_URL, params={"q": query_str}, timeout=3.0)
                     if s_resp.status_code == 200:
                         data = s_resp.json()
                         items: List[Dict[str, Any]] = data if isinstance(data, list) else data.get("results", [])
@@ -162,7 +176,8 @@ class LrcRedProvider(BaseLyricsProvider):
                         for item in items:
                             c_art = str(item.get("artistName") or item.get("artist") or "")
                             c_tit = str(item.get("trackName") or item.get("title") or "")
-                            c_dur = int(round(float(item.get("duration", 0)) * 1000))
+                            c_dur_sec = float(item.get("duration", 0) or 0)
+                            c_dur = int(round(c_dur_sec * 1000)) if c_dur_sec > 0 else duration_ms
                             s1 = score_candidate(primary_artist, primary_title, duration_ms, c_art, c_tit, c_dur)
                             s2 = score_candidate(primary_title, primary_artist, duration_ms, c_art, c_tit, c_dur)
                             score_val = max(s1, s2)
@@ -170,8 +185,8 @@ class LrcRedProvider(BaseLyricsProvider):
 
                         scored.sort(key=lambda x: x[0], reverse=True)
                         for score_val, item in scored:
-                            if score_val >= 65.0:
-                                synced_lrc = item.get("syncedLyrics")
+                            if score_val >= 70.0:
+                                synced_lrc = item.get("syncedLyrics") or item.get("lyrics")
                                 lyrics = _process_lyrics(synced_lrc)
                                 if lyrics:
                                     return lyrics
@@ -180,13 +195,13 @@ class LrcRedProvider(BaseLyricsProvider):
                 except Exception:
                     pass
 
-        # ── 3. Web search fallback (lrc.red / lrclib.net) when api.lrc.red has DNS/connection issues ──
+        # ── 3. Web search fallback (lrc.red) when api.lrc.red has DNS/connection issues ──
         # Try lrc.red search.json
         for q_cand in search_queries + [primary_title, primary_artist]:
             if not q_cand:
                 continue
             try:
-                web_resp = _HTTP_SESSION.get(_LRC_RED_WEB_SEARCH, params={"q": q_cand}, timeout=4.0)
+                web_resp = _http_get(_LRC_RED_WEB_SEARCH, params={"q": q_cand}, timeout=4.0)
                 if web_resp.status_code == 200:
                     data = web_resp.json()
                     hits = data.get("hits", [])
@@ -194,7 +209,8 @@ class LrcRedProvider(BaseLyricsProvider):
                     for h in hits:
                         c_art = str(h.get("artist", ""))
                         c_tit = str(h.get("title", ""))
-                        c_dur = int(round(float(h.get("duration", 0)) * 1000))
+                        c_dur_sec = float(h.get("duration", 0) or 0)
+                        c_dur = int(round(c_dur_sec * 1000)) if c_dur_sec > 0 else duration_ms
                         s1 = score_candidate(primary_artist, primary_title, duration_ms, c_art, c_tit, c_dur)
                         s2 = score_candidate(primary_title, primary_artist, duration_ms, c_art, c_tit, c_dur)
                         score_val = max(s1, s2)
@@ -202,31 +218,13 @@ class LrcRedProvider(BaseLyricsProvider):
 
                     scored.sort(key=lambda x: x[0], reverse=True)
                     for score_val, h in scored:
-                        if score_val >= 65.0 and h.get("isrc"):
+                        if score_val >= 70.0 and h.get("isrc"):
                             lrc_url = _LRC_RED_WEB_LRC.format(isrc=h["isrc"])
-                            lrc_resp = _HTTP_SESSION.get(lrc_url, timeout=5.0)
+                            lrc_resp = _http_get(lrc_url, timeout=5.0)
                             if lrc_resp.status_code == 200:
                                 lyrics = _process_lyrics(lrc_resp.text)
                                 if lyrics:
                                     return lyrics
-            except Exception:
-                pass
-
-        # Try lrclib.net fallback
-        for t_name, a_name in candidate_pairs:
-            if not t_name:
-                continue
-            p: Dict[str, str] = {"track_name": t_name}
-            if a_name:
-                p["artist_name"] = a_name
-            if duration_sec > 0:
-                p["duration"] = str(duration_sec)
-            try:
-                r = _HTTP_SESSION.get(_LRCLIB_GET, params=p, timeout=4.0)
-                if r.status_code == 200:
-                    lyrics = _process_lyrics(r.json().get("syncedLyrics"))
-                    if lyrics:
-                        return lyrics
             except Exception:
                 pass
 

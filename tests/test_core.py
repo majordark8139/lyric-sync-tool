@@ -558,6 +558,157 @@ class TestMultiProviders(unittest.TestCase):
             res = p.search_word_sync("Artist", "Test Track", 180000)
             self.assertIsNone(res)
 
+    def test_universal_provider_rejection_of_line_sync(self) -> None:
+        """RULE OF PROVIDER PARITY: All providers MUST strictly reject line-synced lyrics."""
+        from unittest.mock import patch
+        from core.providers.kugou import KugouProvider
+        from core.providers.lrc_red import LrcRedProvider
+        from core.providers.unison import UnisonProvider
+
+        line_sync_lrc = "[00:01.00] Line one\n[00:05.00] Line two\n"
+        line_sync_krc = (
+            "[ti:Line Sync]\n[ar:Artist]\n"
+            "[1000,4000]Line one without syllable timing\n"
+            "[5000,4000]Line two without syllable timing\n"
+        )
+        line_krc_payload = _make_krc_payload(line_sync_krc)
+
+        # 1. UnisonProvider rejection
+        p_unison = UnisonProvider()
+        with patch("requests.get") as mock_get:
+            mock_get.return_value.status_code = 200
+            mock_get.return_value.json.side_effect = [
+                {"results": [{"id": 1, "title": "Test Track", "artist": "Artist", "duration": 180}]},
+                {"syncType": "linesync", "format": "lrc", "lyrics": line_sync_lrc},
+            ]
+            res_unison = p_unison.search_word_sync("Test Track", "Artist", 180000)
+            self.assertIsNone(res_unison, "UnisonProvider must reject line-synced lyrics")
+
+        # 2. LrcRedProvider rejection
+        p_lrc = LrcRedProvider()
+        with patch("requests.get") as mock_get:
+            mock_get.return_value.status_code = 200
+            mock_get.return_value.json.return_value = {
+                "trackName": "Test Track",
+                "artistName": "Artist",
+                "duration": 180,
+                "syncedLyrics": line_sync_lrc,
+            }
+            res_lrc = p_lrc.search_word_sync("Test Track", "Artist", 180000)
+            self.assertIsNone(res_lrc, "LrcRedProvider must reject line-synced lyrics")
+
+        # 3. KugouProvider rejection
+        p_kugou = KugouProvider()
+        with patch("requests.get") as mock_get:
+            mock_get.return_value.status_code = 200
+            mock_get.return_value.json.side_effect = [
+                {
+                    "candidates": [
+                        {
+                            "id": "cand_1",
+                            "accesskey": "key_1",
+                            "duration": 180000,
+                            "song": "Test Track",
+                            "singer": "Artist",
+                            "krctype": 2,
+                        }
+                    ]
+                },
+                {"content": line_krc_payload},
+            ]
+            res_kugou = p_kugou.search_word_sync("Test Track", "Artist", 180000)
+            self.assertIsNone(res_kugou, "KugouProvider must reject line-synced lyrics")
+
+    def test_universal_provider_candidate_scoring_guardrail(self) -> None:
+        """RULE OF PROVIDER PARITY: All providers MUST reject candidates scoring < 70.0."""
+        from unittest.mock import patch
+        from core.providers.kugou import KugouProvider
+        from core.providers.lrc_red import LrcRedProvider
+        from core.providers.unison import UnisonProvider
+
+        valid_word_lrc = "[00:01.00]<00:01.00>Word1 <00:02.00>Word2\n"
+
+        # 1. UnisonProvider rejects candidate with title 'Sloppy Joe' for query 'Track 1'
+        p_unison = UnisonProvider()
+        with patch("requests.get") as mock_get:
+            mock_get.return_value.status_code = 200
+            mock_get.return_value.json.return_value = {
+                "results": [
+                    {
+                        "id": 1,
+                        "title": "Sloppy Joe",
+                        "artist": "Different Artist",
+                        "duration": 180,
+                        "syncType": "richsync",
+                    }
+                ]
+            }
+            res_unison = p_unison.search_word_sync("Track 1", "Artist", 180000)
+            self.assertIsNone(res_unison, "UnisonProvider must reject candidates scoring < 70.0")
+
+        # 2. LrcRedProvider rejects candidate scoring < 70.0
+        p_lrc = LrcRedProvider()
+        with patch("requests.get") as mock_get:
+            mock_get.return_value.status_code = 200
+            mock_get.return_value.json.return_value = {
+                "results": [
+                    {
+                        "trackName": "Sloppy Joe",
+                        "artistName": "Different Artist",
+                        "duration": 180,
+                        "syncedLyrics": valid_word_lrc,
+                    }
+                ]
+            }
+            res_lrc = p_lrc.search_word_sync("Track 1", "Artist", 180000)
+            self.assertIsNone(res_lrc, "LrcRedProvider must reject candidates scoring < 70.0")
+
+        # 3. KugouProvider rejects candidate scoring < 70.0
+        p_kugou = KugouProvider()
+        with patch("requests.get") as mock_get:
+            mock_get.return_value.status_code = 200
+            mock_get.return_value.json.return_value = {
+                "candidates": [
+                    {
+                        "id": "cand_1",
+                        "accesskey": "key_1",
+                        "duration": 180000,
+                        "song": "Sloppy Joe",
+                        "singer": "Different Artist",
+                        "krctype": 2,
+                    }
+                ]
+            }
+            res_kugou = p_kugou.search_word_sync("Track 1", "Artist", 180000)
+            self.assertIsNone(res_kugou, "KugouProvider must reject candidates scoring < 70.0")
+
+    def test_kugou_background_vocal_to_ttml_parity(self) -> None:
+        """Verify KRC with parenthetical ad-libs converts to ttm:role='x-bg' in to_ttml()."""
+        from core.providers.kugou import _parse_krc_text
+        from core.sync_engine import to_ttml
+
+        krc_text = (
+            "[ti:Test Song]\n"
+            "[ar:Artist]\n"
+            "[1000,3000]<0,500,-1>She <500,500,-1>dance <1000,500,-1>for <1500,500,-1>me <2000,500,-1>(Let's <2500,500,-1>go)\n"
+        )
+        lyrics = _parse_krc_text(krc_text)
+        self.assertIsNotNone(lyrics)
+        self.assertTrue(lyrics.is_word_synced)
+        self.assertEqual(len(lyrics.lines), 1)
+
+        line = lyrics.lines[0]
+        lead_words = [s.text.strip() for s in line.syllables]
+        self.assertEqual(lead_words, ["She", "dance", "for", "me"])
+        self.assertEqual(line.background_text, "(Let's go)")
+        self.assertGreater(len(line.background_syllables), 0)
+
+        # TTML export verification
+        ttml = to_ttml(lyrics)
+        self.assertIn('itunes:timing="Word"', ttml)
+        self.assertIn('<span ttm:role="x-bg">', ttml)
+        self.assertIn("(Let's", ttml)
+        self.assertIn("go)", ttml)
 
 
 class TestTtmlParserAndWordSyncGuardrail(unittest.TestCase):

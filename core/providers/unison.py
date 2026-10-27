@@ -65,13 +65,7 @@ def _process_lyrics_data(data: Dict[str, Any]) -> Optional[SongLyrics]:
     else:
         return None
 
-    if not parsed or not parsed.lines:
-        return None
-
-    if not parsed.is_word_synced:
-        return None
-
-    return parsed
+    return BaseLyricsProvider.validate_word_sync(parsed)
 
 
 class UnisonProvider(BaseLyricsProvider):

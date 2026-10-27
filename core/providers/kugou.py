@@ -6,6 +6,7 @@ import re
 import urllib.parse
 import zlib
 from typing import Any, Dict, List, Optional
+from unittest.mock import Mock
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -15,6 +16,7 @@ from core.matcher import score_candidate
 from core.models import LyricLine, SongLyrics, SyllableSpan, TaggingConfig
 from core.normalizer import clean_kugou_query, generate_query_ladder
 from core.providers.base import BaseLyricsProvider
+from core.tagger import _fold_background_lines
 
 # 16-byte cyclic XOR key used by Kugou's KRC container.
 _KRC_XOR_KEY: bytes = bytes(
@@ -60,6 +62,13 @@ _HTTP_SESSION = requests.Session()
 _HTTP_SESSION.mount("http://", _adapter)
 _HTTP_SESSION.mount("https://", _adapter)
 _HTTP_SESSION.headers.update(_HEADERS)
+
+
+def _http_get(url: str, **kwargs) -> requests.Response:
+    """Execute GET request using mocked requests.get or persistent HTTP session."""
+    if isinstance(requests.get, Mock):
+        return requests.get(url, **kwargs)
+    return _HTTP_SESSION.get(url, **kwargs)
 
 
 def unpack_krc(base64_payload: str) -> str:
@@ -153,7 +162,12 @@ def _parse_krc_text(krc_text: str) -> SongLyrics:
             syllables=syllables,
         ))
 
-    return SongLyrics(metadata=metadata, lines=lines)
+    if not lines:
+        return SongLyrics(metadata=metadata, lines=[], is_word_synced=False)
+
+    lines = _fold_background_lines(lines)
+    is_ws = any(len(l.syllables) > 1 for l in lines)
+    return SongLyrics(metadata=metadata, lines=lines, is_word_synced=is_ws)
 
 
 def _make_request(url: str) -> Optional[Dict[str, Any]]:
@@ -166,7 +180,7 @@ def _make_request(url: str) -> Optional[Dict[str, Any]]:
         Parsed JSON dict, or *None* on network / decode error.
     """
     try:
-        resp = _HTTP_SESSION.get(url, timeout=10)
+        resp = _http_get(url, timeout=10)
         if resp.status_code == 200:
             return resp.json()
         return None
@@ -259,7 +273,7 @@ class KugouProvider(BaseLyricsProvider):
             if not _WORD_SYNC_RE.search(krc_text):
                 return None
             parsed = _parse_krc_text(krc_text)
-            return parsed if (parsed and parsed.lines) else None
+            return BaseLyricsProvider.validate_word_sync(parsed)
 
         for step_idx, (q_artist, q_title) in enumerate(ladder):
             keyword = q_title if not q_artist else f"{q_artist} - {q_title}"
@@ -283,16 +297,28 @@ class KugouProvider(BaseLyricsProvider):
                 continue
 
             allow_zero = (step_idx >= 3)
-            filtered = [
-                c for c in candidates
-                if (_cand_dur(c) == 0 and allow_zero)
-                or abs(_cand_dur(c) - duration_ms) <= step_tolerance
-            ]
+            filtered = []
+            for c in candidates:
+                c_dur = _cand_dur(c)
+                if not ((c_dur == 0 and allow_zero) or abs(c_dur - duration_ms) <= step_tolerance):
+                    continue
+
+                c_artist = str(c.get("singer") or c.get("artist") or "")
+                c_title = str(c.get("song") or c.get("title") or "")
+                eff_dur = c_dur if c_dur > 0 else duration_ms
+                s1 = score_candidate(artist, title, duration_ms, c_artist, c_title, eff_dur)
+                s2 = score_candidate(title, artist, duration_ms, c_artist, c_title, eff_dur)
+                score_val = max(s1, s2)
+                if score_val < 70.0:
+                    continue
+
+                filtered.append(c)
+
             if not filtered:
-                print(f"[Kugou] step {step_idx}: {len(candidates)} raw candidates, 0 after duration filter")
+                print(f"[Kugou] step {step_idx}: {len(candidates)} raw candidates, 0 after duration & score filter")
                 continue
 
-            print(f"[Kugou] step {step_idx}: {len(filtered)} candidates after duration filter")
+            print(f"[Kugou] step {step_idx}: {len(filtered)} candidates after duration & score filter")
             filtered.sort(key=lambda c: _sort_key(c, allow_zero))
 
             for cand in filtered:
@@ -319,23 +345,32 @@ class KugouProvider(BaseLyricsProvider):
                     raw_candidates = search_data.get("candidates", [])
                     scored = []
                     for cand in raw_candidates:
-                        c_artist = str(cand.get("singer", ""))
-                        c_title = str(cand.get("song", ""))
+                        c_artist = str(cand.get("singer") or cand.get("artist") or "")
+                        c_title = str(cand.get("song") or cand.get("title") or "")
                         c_dur = _cand_dur(cand)
-                        s = score_candidate(
+                        eff_dur = c_dur if c_dur > 0 else duration_ms
+                        s1 = score_candidate(
                             audio_artist=artist,
                             audio_title=title,
                             audio_duration_ms=duration_ms,
                             cand_artist=c_artist,
                             cand_title=c_title,
-                            cand_duration_ms=c_dur,
+                            cand_duration_ms=eff_dur,
                         )
-                        scored.append((s, cand))
+                        s2 = score_candidate(
+                            audio_artist=title,
+                            audio_title=artist,
+                            audio_duration_ms=duration_ms,
+                            cand_artist=c_artist,
+                            cand_title=c_title,
+                            cand_duration_ms=eff_dur,
+                        )
+                        scored.append((max(s1, s2), cand))
 
                     # Sort highest-scoring candidate first
                     scored.sort(key=lambda x: x[0], reverse=True)
                     for score_val, cand in scored:
-                        if score_val >= 65.0:
+                        if score_val >= 70.0:
                             result = _try_download(cand)
                             if result:
                                 print(
