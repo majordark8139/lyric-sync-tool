@@ -16,7 +16,9 @@ class Settings(TaggingConfig):
 
     theme: str = "Dark"
     active_provider: str = "Auto"
-    column_widths: List[int] = field(default_factory=lambda: [220, 140, 75, 90, 160])
+    column_widths: List[int] = field(default_factory=lambda: [200, 140, 70, 80, 150])
+    splitter_state: str = ""
+    header_state: str = ""
 
     @property
     def purge_stale(self) -> bool:
@@ -142,7 +144,9 @@ class SettingsManager:
 
         theme = _get_str(self._qsettings, "theme", "Dark")
         active_provider = _get_str(self._qsettings, "active_provider", "Auto")
-        column_widths = _get_column_widths(self._qsettings, "column_widths", [220, 140, 75, 90, 160])
+        column_widths = _get_column_widths(self._qsettings, "column_widths", [200, 140, 70, 80, 150])
+        splitter_state = _get_str(self._qsettings, "splitter_state", "")
+        header_state = _get_str(self._qsettings, "header_state", "")
 
         return Settings(
             write_lrc=write_lrc,
@@ -162,6 +166,8 @@ class SettingsManager:
             theme=theme,
             active_provider=active_provider,
             column_widths=column_widths,
+            splitter_state=splitter_state,
+            header_state=header_state,
         )
 
     def load_settings(self) -> Settings:
@@ -203,10 +209,14 @@ class SettingsManager:
         provider_val = getattr(settings, "active_provider", "Auto")
         self._qsettings.setValue("active_provider", provider_val)
 
-        widths = getattr(settings, "column_widths", [220, 140, 75, 90, 160])
+        widths = getattr(settings, "column_widths", [200, 140, 70, 80, 150])
         self._qsettings.setValue("column_widths", widths)
 
+        self._qsettings.setValue("splitter_state", getattr(settings, "splitter_state", ""))
+        self._qsettings.setValue("header_state", getattr(settings, "header_state", ""))
+
         self._qsettings.sync()
+
 
     def save_settings(self, settings: Union[Settings, TaggingConfig]) -> None:
         """Alias for save()."""

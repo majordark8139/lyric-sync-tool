@@ -332,6 +332,7 @@ class MainWindow(QMainWindow):
         self.tagger_thread: Optional[BatchTaggerWorker] = None
 
         self._init_ui()
+        self._restore_layout_state()
 
         # Restore active provider
         saved_provider = getattr(self.current_settings, "active_provider", "Auto")
@@ -438,8 +439,9 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.btn_cancel_tagging)
 
         # ── Central Splitter ──
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        splitter.setHandleWidth(4)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.splitter.setHandleWidth(4)
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
 
         # Left: Hierarchical Tree Widget
         left_widget = QWidget()
@@ -453,7 +455,7 @@ class MainWindow(QMainWindow):
         self.table = _TableTreeCompat(self.tree, self)
 
         left_layout.addWidget(self.tree)
-        splitter.addWidget(left_widget)
+        self.splitter.addWidget(left_widget)
 
         # Right: Inspector Tabs
         self.tabs = QTabWidget()
@@ -470,11 +472,11 @@ class MainWindow(QMainWindow):
 
         self.tabs.addTab(self.preview_widget, "Live Preview")
         self.tabs.addTab(self.editor_widget, "Plain Editor")
-        splitter.addWidget(self.tabs)
+        self.splitter.addWidget(self.tabs)
 
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        self.setCentralWidget(splitter)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 2)
+        self.setCentralWidget(self.splitter)
 
         # ── Status Bar ──
         status_bar = QStatusBar(self)
@@ -503,12 +505,12 @@ class MainWindow(QMainWindow):
         self.tree.setColumnCount(5)
         self.tree.setHeaderLabels(["Title", "Artist", "Duration", "Sync State", "Status"])
         header = self.tree.header()
+        header.setStretchLastSection(False)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        header.setStretchLastSection(True)
 
-        widths = getattr(self.config, "column_widths", [220, 140, 75, 90, 160])
+        widths = getattr(self.config, "column_widths", [200, 140, 70, 80, 150])
         if not isinstance(widths, (list, tuple)) or len(widths) != 5:
-            widths = [220, 140, 75, 90, 160]
+            widths = [200, 140, 70, 80, 150]
 
         for col_idx, width in enumerate(widths):
             if width > 20:
@@ -525,10 +527,45 @@ class MainWindow(QMainWindow):
         self.tree.itemChanged.connect(self._on_tree_item_changed)
         self.tree.setAcceptDrops(True)
 
+    def _restore_layout_state(self) -> None:
+        # Splitter restoration
+        splitter_restored = False
+        if getattr(self.config, "splitter_state", ""):
+            try:
+                splitter_restored = self.splitter.restoreState(bytes.fromhex(self.config.splitter_state))
+            except Exception:
+                splitter_restored = False
+        if not splitter_restored:
+            self.splitter.setSizes([550, 450])
+
+        # Header restoration
+        header = self.tree.header()
+        header_restored = False
+        if getattr(self.config, "header_state", ""):
+            try:
+                header_restored = header.restoreState(bytes.fromhex(self.config.header_state))
+            except Exception:
+                header_restored = False
+        if not header_restored:
+            widths = getattr(self.config, "column_widths", [200, 140, 70, 80, 150])
+            if not isinstance(widths, (list, tuple)) or len(widths) != 5:
+                widths = [200, 140, 70, 80, 150]
+            for col_idx, width in enumerate(widths):
+                if width > 20:
+                    header.resizeSection(col_idx, width)
+
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+
     def _on_header_section_resized(self, logical_index: int, old_size: int, new_size: int) -> None:
         header = self.tree.header()
+        self.config.header_state = bytes(header.saveState()).hex()
         self.config.column_widths = [header.sectionSize(i) for i in range(header.count())]
-        save_config(self.config)
+        self.settings_manager.save(self.config)
+
+    def _on_splitter_moved(self, pos: int, index: int) -> None:
+        self.config.splitter_state = bytes(self.splitter.saveState()).hex()
+        self.settings_manager.save(self.config)
 
     # ── Drag and Drop Ingestion ───────────────────────────────────────────
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
@@ -1042,10 +1079,13 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         try:
+            if hasattr(self, "splitter") and self.splitter:
+                self.config.splitter_state = bytes(self.splitter.saveState()).hex()
             if hasattr(self, "tree") and self.tree.header():
                 header = self.tree.header()
+                self.config.header_state = bytes(header.saveState()).hex()
                 self.config.column_widths = [header.sectionSize(i) for i in range(header.count())]
-                save_config(self.config)
+            self.settings_manager.save(self.config)
         except Exception:
             pass
         if hasattr(self, "preview_widget") and self.preview_widget:

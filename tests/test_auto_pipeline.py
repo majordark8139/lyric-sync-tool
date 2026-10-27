@@ -230,12 +230,12 @@ class TestGuiResizeAndInfoButton(unittest.TestCase):
             )
 
         # Verify default column widths
-        self.assertEqual(self.win.tree.columnWidth(0), 220)
+        self.assertEqual(self.win.tree.columnWidth(0), 200)
         self.assertEqual(self.win.tree.columnWidth(1), 140)
-        self.assertEqual(self.win.tree.columnWidth(2), 75)
-        self.assertEqual(self.win.tree.columnWidth(3), 90)
-        self.assertEqual(self.win.tree.columnWidth(4), 160)
-        self.assertTrue(header.stretchLastSection())
+        self.assertEqual(self.win.tree.columnWidth(2), 70)
+        self.assertEqual(self.win.tree.columnWidth(3), 80)
+        self.assertEqual(self.win.tree.columnWidth(4), 150)
+        self.assertFalse(header.stretchLastSection())
 
     def test_provider_dropdown_and_info_button(self) -> None:
         from gui.app import MainWindow
@@ -281,6 +281,35 @@ class TestGuiResizeAndInfoButton(unittest.TestCase):
         close_event = QCloseEvent()
         self.win.closeEvent(close_event)
         self.assertEqual(self.win.config.column_widths[0], 350)
+
+    def test_splitter_and_header_state_restore_and_save(self) -> None:
+        from PySide6.QtGui import QCloseEvent
+        from PySide6.QtWidgets import QApplication
+        from gui.app import MainWindow
+
+        self.win = MainWindow()
+        self.win.tree.header().resizeSection(0, 310)
+        self.win.splitter.setSizes([600, 400])
+        self.win._on_splitter_moved(600, 1)
+
+        close_event = QCloseEvent()
+        self.win.closeEvent(close_event)
+
+        self.assertTrue(bool(self.win.config.splitter_state))
+        self.assertTrue(bool(self.win.config.header_state))
+
+        saved_splitter = self.win.config.splitter_state
+        saved_header = self.win.config.header_state
+
+        self.win.close()
+        self.win.deleteLater()
+        self.win = None
+        QApplication.processEvents()
+
+        self.win = MainWindow()
+        self.assertEqual(self.win.config.splitter_state, saved_splitter)
+        self.assertEqual(self.win.config.header_state, saved_header)
+        self.assertEqual(self.win.tree.columnWidth(0), 310)
 
 
 if __name__ == "__main__":
