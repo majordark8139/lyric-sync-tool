@@ -32,6 +32,7 @@ _TTML_WORD_RE = re.compile(r'itunes:timing=["\']Word["\']|<span\s+[^>]*begin=', 
 # - Standard LRC style: [mm:ss.xx] or [mm:ss.xxx]
 _LINE_TAG_RE = re.compile(r"^\s*\[\d{2}:\d{2}\.\d{2,3}\]", re.MULTILINE)
 _TTML_LINE_RE = re.compile(r"<p\s+[^>]*begin=", re.IGNORECASE)
+_SINGER_PREFIX_RE = re.compile(r"^(v\d+|singer\d+|[A-Za-z0-9_]+):\s*", re.IGNORECASE)
 
 
 def _atomic_write_text(target_path: pathlib.Path, content: str) -> None:
@@ -477,6 +478,12 @@ def _parse_lrc_text(text: str) -> Optional[SongLyrics]:
         start_ms = _ms_from_lrc(lm.group(1), lm.group(2), lm.group(3))
         body = lm.group(4)
 
+        singer_id: Optional[str] = None
+        m_singer = _SINGER_PREFIX_RE.match(body)
+        if m_singer:
+            singer_id = m_singer.group(1).lower()
+            body = _SINGER_PREFIX_RE.sub("", body)
+
         syllables: List[SyllableSpan] = []
         word_matches = list(_ELRC_WORD_RE.finditer(body))
 
@@ -507,7 +514,7 @@ def _parse_lrc_text(text: str) -> Optional[SongLyrics]:
             end_ms = start_ms + 3000
             syllables.append(SyllableSpan(abs_start_ms=start_ms, abs_end_ms=end_ms, text=body_stripped))
 
-        lines.append(LyricLine(start_ms=start_ms, end_ms=end_ms, syllables=syllables))
+        lines.append(LyricLine(start_ms=start_ms, end_ms=end_ms, syllables=syllables, singer_id=singer_id))
 
     if not lines:
         return None

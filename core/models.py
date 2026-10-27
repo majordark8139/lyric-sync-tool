@@ -1,6 +1,9 @@
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
+
+_SINGER_PREFIX_RE = re.compile(r"^(v\d+|singer\d+|[A-Za-z0-9_]+):\s*", re.IGNORECASE)
 
 
 class SyncState(str, Enum):
@@ -100,8 +103,34 @@ class LyricLine:
         self.background_text = background_text
         self.background_syllables = list(background_syllables) if background_syllables is not None else []
         self.background_end_ms = background_end_ms
-        self._text = text if text is not None else _text
         self.singer_id = singer_id
+
+        raw_txt = text if text is not None else _text
+        if raw_txt is not None:
+            m = _SINGER_PREFIX_RE.match(raw_txt)
+            if m:
+                if not self.singer_id:
+                    self.singer_id = m.group(1).lower()
+                raw_txt = _SINGER_PREFIX_RE.sub("", raw_txt)
+        self._text = raw_txt
+
+        if self.syllables:
+            s0 = self.syllables[0]
+            s0_text = getattr(s0, "text", "")
+            m0 = _SINGER_PREFIX_RE.match(s0_text)
+            if m0:
+                if not self.singer_id:
+                    self.singer_id = m0.group(1).lower()
+                clean_s0 = _SINGER_PREFIX_RE.sub("", s0_text)
+                try:
+                    s0.text = clean_s0
+                except (AttributeError, TypeError):
+                    if hasattr(s0, "abs_start_ms") and hasattr(s0, "abs_end_ms"):
+                        self.syllables[0] = SyllableSpan(
+                            abs_start_ms=s0.abs_start_ms,
+                            abs_end_ms=s0.abs_end_ms,
+                            text=clean_s0,
+                        )
 
         if end_ms is not None:
             self.end_ms = end_ms
@@ -120,6 +149,12 @@ class LyricLine:
 
     @text.setter
     def text(self, val: str) -> None:
+        if val is not None:
+            m = _SINGER_PREFIX_RE.match(val)
+            if m:
+                if not self.singer_id:
+                    self.singer_id = m.group(1).lower()
+                val = _SINGER_PREFIX_RE.sub("", val)
         self._text = val
 
     @property

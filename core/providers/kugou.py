@@ -203,23 +203,34 @@ class KugouProvider(BaseLyricsProvider):
 
     def search_word_sync(
         self,
-        title: str,
-        artist: str,
-        duration_ms: int,
+        artist: str = "",
+        title: str = "",
+        duration_ms: int = 0,
         config: Optional[TaggingConfig] = None,
+        **kwargs,
     ) -> Optional[SongLyrics]:
         """Search Kugou for syllable-synced lyrics using a cascading ladder.
 
         Args:
-            title: Song title as tagged on the audio file.
             artist: Primary artist name.
+            title: Song title as tagged on the audio file.
             duration_ms: Track duration in milliseconds.
             config: Optional TaggingConfig controlling duration tolerance and ladder fallback.
+            **kwargs: Extra parameters.
 
         Returns:
             Fully populated :class:`~core.models.SongLyrics` with per-syllable
             timing, or *None* if no matching word-synced lyrics are found.
         """
+        if "artist" in kwargs and not artist:
+            artist = kwargs["artist"]
+        if "title" in kwargs and not title:
+            title = kwargs["title"]
+        if "duration_ms" in kwargs and not duration_ms:
+            duration_ms = kwargs["duration_ms"]
+        if "config" in kwargs and config is None:
+            config = kwargs["config"]
+
         tolerance = config.duration_tolerance_ms if config else _DURATION_TOLERANCE_MS
 
         if config and not config.smart_fallback:

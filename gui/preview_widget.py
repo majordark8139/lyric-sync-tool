@@ -2,6 +2,7 @@
 
 import ctypes
 import os
+import re
 import sys
 import time
 from typing import Optional
@@ -19,6 +20,8 @@ from PySide6.QtWidgets import (
 )
 
 from core.models import LyricLine, SongLyrics
+
+_SINGER_PREFIX_RE = re.compile(r"^(v\d+|singer\d+|[A-Za-z0-9_]+):\s*", re.IGNORECASE)
 
 try:
     _Py_IncRef = ctypes.pythonapi.Py_IncRef
@@ -223,6 +226,7 @@ class _KaraokeCanvas(QWidget):
 
                 raw_line_text = line.text if line.text is not None else "".join(getattr(s, "text", "") for s in line.syllables)
                 line_text = str(raw_line_text or "").strip()
+                line_text = _SINGER_PREFIX_RE.sub("", line_text)
                 if not line_text:
                     continue
 
@@ -240,6 +244,7 @@ class _KaraokeCanvas(QWidget):
                     if line.has_background:
                         raw_bg = line.background_text or "".join(getattr(s, "text", "") for s in line.background_syllables)
                         bg_text = str(raw_bg or "").strip()
+                        bg_text = _SINGER_PREFIX_RE.sub("", bg_text)
                         if bg_text:
                             sub_y = y + 20.0
                             if is_word_synced and line.background_syllables:
@@ -263,6 +268,7 @@ class _KaraokeCanvas(QWidget):
                         if active_bg is not None:
                             raw_sub = active_bg.text or "".join(getattr(s, "text", "") for s in active_bg.syllables)
                             sub_text = str(raw_sub or "").strip()
+                            sub_text = _SINGER_PREFIX_RE.sub("", sub_text)
                             if sub_text:
                                 sub_y = y + 20.0
                                 if is_word_synced and active_bg.syllables:
@@ -281,11 +287,11 @@ class _KaraokeCanvas(QWidget):
                     pen = past_line_pen if i < active_idx else dim_pen
                     painter.setPen(pen)
                     fm = QFontMetricsF(base_font)
-                    text_width = fm.horizontalAdvance(line_text)
+                    line_w = fm.horizontalAdvance(line_text)
                     if getattr(line, "singer_id", None) == "v2":
-                        x = max(10.0, float(width) - text_width - 30.0)
+                        x = max(40.0, float(width) - line_w - 40.0)
                     else:
-                        x = max(10.0, (float(width) - text_width) / 2.0)
+                        x = 40.0
                     baseline_y = y + fm.ascent() / 2.0
                     painter.drawText(int(x), int(baseline_y), line_text)
 
@@ -293,16 +299,17 @@ class _KaraokeCanvas(QWidget):
                     if line.has_background:
                         raw_bg = line.background_text or "".join(getattr(s, "text", "") for s in line.background_syllables)
                         bg_text = str(raw_bg or "").strip()
+                        bg_text = _SINGER_PREFIX_RE.sub("", bg_text)
                         if bg_text:
                             sub_y = y + 20.0
                             painter.setFont(sub_base_font)
                             painter.setPen(sub_dim_pen)
                             sub_fm = QFontMetricsF(sub_base_font)
-                            sub_text_w = sub_fm.horizontalAdvance(bg_text)
+                            bg_w = sub_fm.horizontalAdvance(bg_text)
                             if getattr(line, "singer_id", None) == "v2":
-                                sub_x = max(10.0, float(width) - sub_text_w - 30.0)
+                                sub_x = max(40.0, float(width) - bg_w - 40.0)
                             else:
-                                sub_x = max(10.0, (float(width) - sub_text_w) / 2.0)
+                                sub_x = 40.0
                             sub_baseline_y = sub_y + sub_fm.ascent() / 2.0
                             painter.drawText(int(sub_x), int(sub_baseline_y), bg_text)
         finally:
@@ -331,13 +338,14 @@ class _KaraokeCanvas(QWidget):
         painter.setFont(f)
         painter.setPen(p)
         safe_text = str(line_text or "")
+        safe_text = _SINGER_PREFIX_RE.sub("", safe_text)
         fm = QFontMetricsF(f)
-        text_width = fm.horizontalAdvance(safe_text)
+        line_w = fm.horizontalAdvance(safe_text)
         sid = singer_id or (getattr(line, "singer_id", None) if line else None)
         if sid == "v2":
-            x = max(10.0, view_width - text_width - 30.0)
+            x = max(40.0, float(view_width) - line_w - 40.0)
         else:
-            x = max(10.0, (view_width - text_width) / 2.0)
+            x = 40.0
         baseline_y = y + fm.ascent() / 2.0
         painter.drawText(int(x), int(baseline_y), safe_text)
 
@@ -370,12 +378,13 @@ class _KaraokeCanvas(QWidget):
         syls = syls or []
 
         safe_text = str(line_text or "")
+        safe_text = _SINGER_PREFIX_RE.sub("", safe_text)
         fm = QFontMetricsF(f)
-        text_width = fm.horizontalAdvance(safe_text)
+        line_w = fm.horizontalAdvance(safe_text)
         if getattr(line, "singer_id", None) == "v2":
-            x_start = max(10.0, view_width - text_width - 30.0)
+            x_start = max(40.0, float(view_width) - line_w - 40.0)
         else:
-            x_start = max(10.0, (view_width - text_width) / 2.0)
+            x_start = 40.0
         baseline_y = y + fm.ascent() / 2.0
 
         # 1. Draw full line in dim colour as base layer
@@ -387,8 +396,10 @@ class _KaraokeCanvas(QWidget):
         cursor_x = x_start
         sweep_x = x_start
 
-        for syl in syls:
+        for idx, syl in enumerate(syls):
             syl_text = str(getattr(syl, "text", "") or "")
+            if idx == 0:
+                syl_text = _SINGER_PREFIX_RE.sub("", syl_text)
             syl_w = fm.horizontalAdvance(syl_text)
             abs_end_ms = getattr(syl, "abs_end_ms", 0)
             abs_start_ms = getattr(syl, "abs_start_ms", 0)

@@ -1,9 +1,10 @@
-"""TTML parser — converts Apple Music / TTML timed XML documents into SongLyrics."""
-
+import re
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional
 
 from core.models import LyricLine, SongLyrics, Syllable
+
+_SINGER_PREFIX_RE = re.compile(r"^(v\d+|singer\d+|[A-Za-z0-9_]+):\s*", re.IGNORECASE)
 
 
 def parse_time(val: Optional[str]) -> int:
@@ -194,6 +195,12 @@ def parse_ttml(xml_content: str) -> SongLyrics:
 
             for i, child in enumerate(lead_spans):
                 formatted_text = _format_span_text(lead_spans, i)
+                if i == 0:
+                    m = _SINGER_PREFIX_RE.match(formatted_text)
+                    if m:
+                        if not singer_id:
+                            singer_id = m.group(1).lower()
+                        formatted_text = _SINGER_PREFIX_RE.sub("", formatted_text)
                 span_start = parse_time(child.attrib.get("begin", str(line_start)))
                 span_end = parse_time(child.attrib.get("end", str(span_start)))
                 duration = max(0, span_end - span_start)
@@ -234,8 +241,12 @@ def parse_ttml(xml_content: str) -> SongLyrics:
 
             bg_text = "".join(bg_text_parts).strip() if bg_text_parts else None
 
+            if singer_id and singer_id not in agents:
+                agents[singer_id] = singer_id
+
             if syllables:
                 full_text = "".join(s.text for s in syllables).strip()
+                full_text = _SINGER_PREFIX_RE.sub("", full_text)
                 if not line_end:
                     line_end = max(s.abs_end_ms for s in syllables)
                 lines.append(
@@ -269,21 +280,37 @@ def parse_ttml(xml_content: str) -> SongLyrics:
                     )
                 )
             else:
+                txt = (p.text or "").strip()
+                m = _SINGER_PREFIX_RE.match(txt)
+                if m:
+                    if not singer_id:
+                        singer_id = m.group(1).lower()
+                    txt = _SINGER_PREFIX_RE.sub("", txt)
+                if singer_id and singer_id not in agents:
+                    agents[singer_id] = singer_id
                 lines.append(
                     LyricLine(
                         start_ms=line_start,
                         end_ms=line_end or line_start,
-                        text=(p.text or "").strip(),
+                        text=txt,
                         syllables=[],
                         singer_id=singer_id,
                     )
                 )
         else:
+            txt = (p.text or "").strip()
+            m = _SINGER_PREFIX_RE.match(txt)
+            if m:
+                if not singer_id:
+                    singer_id = m.group(1).lower()
+                txt = _SINGER_PREFIX_RE.sub("", txt)
+            if singer_id and singer_id not in agents:
+                agents[singer_id] = singer_id
             lines.append(
                 LyricLine(
                     start_ms=line_start,
                     end_ms=line_end or line_start,
-                    text=(p.text or "").strip(),
+                    text=txt,
                     syllables=[],
                     singer_id=singer_id,
                 )

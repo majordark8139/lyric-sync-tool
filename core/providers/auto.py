@@ -28,38 +28,51 @@ class AutoLyricsProvider(BaseLyricsProvider):
 
     def search_word_sync(
         self,
-        title: str,
-        artist: str,
-        duration_ms: int,
+        artist: str = "",
+        title: str = "",
+        duration_ms: int = 0,
         config: Optional[TaggingConfig] = None,
+        **kwargs,
     ) -> Optional[SongLyrics]:
         """Query Unison first, stream misses to lrc.red, and fallback to Kugou."""
+        if "artist" in kwargs and not artist:
+            artist = kwargs["artist"]
+        if "title" in kwargs and not title:
+            title = kwargs["title"]
+        if "duration_ms" in kwargs and not duration_ms:
+            duration_ms = kwargs["duration_ms"]
+        if "config" in kwargs and config is None:
+            config = kwargs["config"]
+
         # Stage 1: Unison
         res = self.unison.search_word_sync(
-            title=title,
             artist=artist,
+            title=title,
             duration_ms=duration_ms,
             config=config,
+            **kwargs,
         )
         if res:
             return self.validate_word_sync(res)
 
         # Stage 2: lrc.red
         res = self.lrc_red.search_word_sync(
-            title=title,
             artist=artist,
+            title=title,
             duration_ms=duration_ms,
             config=config,
+            **kwargs,
         )
         if res:
             return self.validate_word_sync(res)
 
         # Stage 3: Kugou
         res = self.kugou.search_word_sync(
-            title=title,
             artist=artist,
+            title=title,
             duration_ms=duration_ms,
             config=config,
+            **kwargs,
         )
         if res:
             return self.validate_word_sync(res)

@@ -37,6 +37,8 @@ _HTTP_SESSION.headers.update(_HEADERS)
 
 def _http_get(url: str, **kwargs) -> requests.Response:
     """Execute GET request using mocked requests.get or persistent HTTP session."""
+    if "timeout" not in kwargs:
+        kwargs["timeout"] = (5, 10)
     if isinstance(requests.get, Mock):
         return requests.get(url, **kwargs)
     return _HTTP_SESSION.get(url, **kwargs)
@@ -78,19 +80,18 @@ class UnisonProvider(BaseLyricsProvider):
 
     def search_word_sync(
         self,
-        title: str = "",
         artist: str = "",
+        title: str = "",
         duration_ms: int = 0,
-        config: Optional[TaggingConfig] = None,
         **kwargs,
     ) -> Optional[SongLyrics]:
         """Search and fetch verified richsync word-synced lyrics from Unison.
 
         Args:
-            title: Track title.
             artist: Track artist.
+            title: Track title.
             duration_ms: Track duration in milliseconds.
-            config: Optional configuration.
+            **kwargs: Optional configuration or extra parameters.
 
         Returns:
             Populated SongLyrics if matched and verified richsync, otherwise None.
@@ -105,19 +106,23 @@ class UnisonProvider(BaseLyricsProvider):
         clean_title = title.strip()
         clean_artist = artist.strip()
 
-        if not clean_title:
+        if not clean_title and not clean_artist:
             return None
 
         # Build query ladder: primary is f"{clean_artist} {clean_title}", fallback is clean_title
         queries = []
-        if clean_artist and f"{clean_artist} {clean_title}" != clean_title:
-            queries.append(f"{clean_artist} {clean_title}")
-        queries.append(clean_title)
+        combined = f"{clean_artist} {clean_title}".strip()
+        if combined:
+            queries.append(combined)
+        if clean_title and clean_title not in queries:
+            queries.append(clean_title)
+        if clean_artist and clean_artist not in queries:
+            queries.append(clean_artist)
 
         for query in queries:
             try:
                 params = {"q": query, "limit": "20"}
-                resp = _http_get(_UNISON_SEARCH_URL, params=params, timeout=5.0)
+                resp = _http_get(_UNISON_SEARCH_URL, params=params, timeout=(5, 10))
                 if resp.status_code != 200:
                     continue
 
@@ -209,7 +214,7 @@ class UnisonProvider(BaseLyricsProvider):
 
                 for _, best_hit in candidate_matches:
                     entry_url = f"{_UNISON_BASE_URL}/lyrics/{best_hit['id']}"
-                    entry_resp = _http_get(entry_url, timeout=5.0)
+                    entry_resp = _http_get(entry_url, timeout=(5, 10))
                     if entry_resp.status_code == 200:
                         entry_data = entry_resp.json()
                         inner = (

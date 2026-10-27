@@ -174,11 +174,13 @@ class BatchTaggerWorker(QThread):
 
         # Skip if already word synced and overwrite is disabled
         if not self._config.overwrite_existing_word_sync and track.sync_state == SyncState.WORD:
-            self.track_progress.emit(idx, "Skipped (Existing Word Sync)", track)
+            track.status = "Skipped (Existing Word Sync)"
+            self.track_progress.emit(idx, track.status, track)
             return
 
-        lyrics = None
+        status = "No Word Sync Available"
         try:
+            lyrics = None
             if self._is_auto:
                 unison = getattr(self._provider, "unison", None) or UnisonProvider()
                 lrc_red = getattr(self._provider, "lrc_red", None) or LrcRedProvider()
@@ -187,8 +189,8 @@ class BatchTaggerWorker(QThread):
                 # Stage 1: Unison
                 self.track_progress.emit(idx, "Searching (Unison)...", track)
                 lyrics = unison.search_word_sync(
-                    title=track.title,
                     artist=track.artist,
+                    title=track.title,
                     duration_ms=track.duration_ms,
                     config=self._config,
                 )
@@ -197,8 +199,8 @@ class BatchTaggerWorker(QThread):
                 if not lyrics and not self.isInterruptionRequested() and not self._is_cancelled:
                     self.track_progress.emit(idx, "Searching (lrc.red)...", track)
                     lyrics = lrc_red.search_word_sync(
-                        title=track.title,
                         artist=track.artist,
+                        title=track.title,
                         duration_ms=track.duration_ms,
                         config=self._config,
                     )
@@ -207,8 +209,8 @@ class BatchTaggerWorker(QThread):
                 if not lyrics and not self.isInterruptionRequested() and not self._is_cancelled:
                     self.track_progress.emit(idx, "Searching (Kugou)...", track)
                     lyrics = kugou.search_word_sync(
-                        title=track.title,
                         artist=track.artist,
+                        title=track.title,
                         duration_ms=track.duration_ms,
                         config=self._config,
                     )
@@ -216,33 +218,30 @@ class BatchTaggerWorker(QThread):
                 p_name = getattr(self._provider, "name", "Provider")
                 self.track_progress.emit(idx, f"Searching ({p_name})...", track)
                 lyrics = self._provider.search_word_sync(
-                    title=track.title,
                     artist=track.artist,
+                    title=track.title,
                     duration_ms=track.duration_ms,
                     config=self._config,
                 )
-        except Exception as e:
-            self.track_progress.emit(idx, f"Error: {e}", track)
-            return
 
-        if self.isInterruptionRequested() or self._is_cancelled:
-            return
+            if self.isInterruptionRequested() or self._is_cancelled:
+                return
 
-        if lyrics and lyrics.lines:
-            try:
+            if lyrics and lyrics.lines:
                 self.track_progress.emit(idx, "Applying tags...", track)
                 apply_lyrics(track.file_path, lyrics, config=self._config)
                 actual_type = "WORD" if lyrics.is_word_synced else "LINE"
                 track.sync_state = actual_type
-                track.status = f"Tagged ({actual_type})"
+                status = f"Tagged ({actual_type})"
                 track.matched_lyrics = lyrics
+            else:
+                status = "No Word Sync Available"
+        except Exception as e:
+            status = f"Error: {e}"
+        finally:
+            if not (self.isInterruptionRequested() or self._is_cancelled):
+                track.status = status
                 self.track_progress.emit(idx, track.status, track)
-            except Exception as e:
-                track.status = f"Apply Error: {e}"
-                self.track_progress.emit(idx, track.status, track)
-        else:
-            track.status = "No Word Sync Available"
-            self.track_progress.emit(idx, track.status, track)
 
     def run(self) -> None:
         total = len(self._tracks)

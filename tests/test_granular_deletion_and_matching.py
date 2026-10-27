@@ -203,7 +203,7 @@ class TestUnisonSearchAndTTML(unittest.TestCase):
             return m
 
         with patch("core.providers.unison._http_get", side_effect=mock_get):
-            res = provider.search_word_sync("All The Stars", "Kendrick Lamar", 231000)
+            res = provider.search_word_sync(artist="Kendrick Lamar", title="All The Stars", duration_ms=231000)
             self.assertIsNotNone(res)
             self.assertTrue(res.is_word_synced)
             self.assertIn("Kendrick Lamar All The Stars", search_calls[0])

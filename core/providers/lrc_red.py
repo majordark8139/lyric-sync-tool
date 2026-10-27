@@ -75,30 +75,29 @@ class LrcRedProvider(BaseLyricsProvider):
 
     def search_word_sync(
         self,
-        title: str = "",
         artist: str = "",
+        title: str = "",
         duration_ms: int = 0,
-        config: Optional[TaggingConfig] = None,
         **kwargs,
     ) -> Optional[SongLyrics]:
         """Search and fetch synchronized lyrics from lrc.red.
 
-        Supports both search_word_sync(title, artist, duration_ms) and
-        search_word_sync(artist, title, duration_ms).
+        Supports both search_word_sync(artist=..., title=...) and
+        search_word_sync(title=..., artist=...).
 
         Args:
-            title: Track title (or artist if called positionally as artist, title).
-            artist: Track artist (or title if called positionally as artist, title).
+            artist: Track artist.
+            title: Track title.
             duration_ms: Track duration in milliseconds.
-            config: Optional configuration.
+            **kwargs: Optional extra parameters or config.
 
         Returns:
             Populated SongLyrics if matched, otherwise None.
         """
-        if "title" in kwargs and not title:
-            title = kwargs["title"]
         if "artist" in kwargs and not artist:
             artist = kwargs["artist"]
+        if "title" in kwargs and not title:
+            title = kwargs["title"]
         if "duration_ms" in kwargs and not duration_ms:
             duration_ms = kwargs["duration_ms"]
 

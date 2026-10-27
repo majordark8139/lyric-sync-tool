@@ -7,6 +7,8 @@ from xml.sax.saxutils import escape as xml_escape
 
 from core.models import LyricLine, SongLyrics, SyllableSpan
 
+_SINGER_PREFIX_RE = re.compile(r"^(v\d+|singer\d+|[A-Za-z0-9_]+):\s*", re.IGNORECASE)
+
 
 # ---------------------------------------------------------------------------
 # Plain-text export
@@ -28,6 +30,7 @@ def to_plain_text(song: SongLyrics) -> str:
     out_lines: List[str] = []
     for line in song.lines:
         full_text = line.text or "".join(s.text for s in line.syllables).strip()
+        full_text = _SINGER_PREFIX_RE.sub("", full_text)
         if line.background_text and line.background_text not in full_text:
             full_text = f"{full_text} {line.background_text}".strip()
         out_lines.append(full_text)
@@ -318,7 +321,8 @@ def to_enhanced_lrc(song: SongLyrics) -> str:
             tag = f"<{_ms_to_lrc(span.abs_start_ms)}>"
             if idx > 0 and not body.endswith(" "):
                 body += " "
-            body += tag + span.text
+            clean_s = _SINGER_PREFIX_RE.sub("", span.text) if idx == 0 else span.text
+            body += tag + clean_s
         last_end = spans[-1].abs_end_ms
         if not body.endswith(" "):
             body += " "
@@ -396,14 +400,16 @@ def to_ttml(song: SongLyrics) -> str:
         agent_attr = f' ttm:agent="{line.singer_id}"' if getattr(line, "singer_id", None) else ""
 
         spans: List[str] = []
-        for span in line.syllables:
+        for idx, span in enumerate(line.syllables):
             sb = _ms_to_ttml(span.abs_start_ms)
             se = _ms_to_ttml(span.abs_end_ms)
-            escaped = xml_escape(span.text)
+            clean_s = _SINGER_PREFIX_RE.sub("", span.text) if idx == 0 else span.text
+            escaped = xml_escape(clean_s)
             spans.append(f'<span begin="{sb}" end="{se}">{escaped}</span>')
 
         if not spans and line.text:
-            escaped = xml_escape(line.text)
+            clean_line_text = _SINGER_PREFIX_RE.sub("", line.text)
+            escaped = xml_escape(clean_line_text)
             spans.append(f'<span begin="{begin}" end="{end}">{escaped}</span>')
 
         bg_spans: List[str] = []

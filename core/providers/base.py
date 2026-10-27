@@ -16,18 +16,18 @@ class BaseLyricsProvider(ABC):
     @abstractmethod
     def search_word_sync(
         self,
-        title: str,
-        artist: str,
-        duration_ms: int,
-        config: Optional[TaggingConfig] = None,
+        artist: str = "",
+        title: str = "",
+        duration_ms: int = 0,
+        **kwargs,
     ) -> Optional[SongLyrics]:
         """Search and fetch word/syllable-synchronized lyrics for a track.
 
         Args:
-            title: Song title.
             artist: Song artist.
+            title: Song title.
             duration_ms: Track duration in milliseconds.
-            config: Optional TaggingConfig controlling tolerances and fallback ladders.
+            **kwargs: Optional provider-specific parameters (e.g. config).
 
         Returns:
             SongLyrics object if matching lyrics are found, otherwise None.
