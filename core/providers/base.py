@@ -19,6 +19,7 @@ class BaseLyricsProvider(ABC):
         artist: str = "",
         title: str = "",
         duration_ms: int = 0,
+        album_artist: str = "",
         **kwargs,
     ) -> Optional[SongLyrics]:
         """Search and fetch word/syllable-synchronized lyrics for a track.
@@ -27,6 +28,7 @@ class BaseLyricsProvider(ABC):
             artist: Song artist.
             title: Song title.
             duration_ms: Track duration in milliseconds.
+            album_artist: Optional album artist for collaboration ladder resolution.
             **kwargs: Optional provider-specific parameters (e.g. config).
 
         Returns:

@@ -207,7 +207,7 @@ def extract_primary_artist(artist: str) -> str:
     return artist.strip()
 
 
-def generate_query_ladder(artist: str, title: str) -> List[Tuple[str, str]]:
+def generate_query_ladder(artist: str, title: str, album_artist: str = "") -> List[Tuple[str, str]]:
     """Generate cascading query candidates in prioritized order with deduplication.
 
     Prioritized query order:
@@ -216,6 +216,11 @@ def generate_query_ladder(artist: str, title: str) -> List[Tuple[str, str]]:
          - (primary_artist, title)
          - (primary_artist, clean_kugou_query(strip_features(title)))
          - (artist.replace(';', ',').replace('  ', ' '), strip_features(title))
+      0b. Album artist collaboration rungs (when album_artist differs from artist):
+         - (f"{artist} & {album_artist}", strip_features(title))
+         - (f"{artist} & {album_artist}", title)
+         - (f"{artist}, {album_artist}", strip_features(title))
+         - (f"{artist}, {album_artist}", title)
       1. Exact raw tags: (artist, title)
       2. Punctuation-sanitized full title: (sanitize_search_query(artist), sanitize_search_query(title))
       3. Feature-stripped: (artist, strip_features(title))
@@ -227,6 +232,7 @@ def generate_query_ladder(artist: str, title: str) -> List[Tuple[str, str]]:
     Args:
         artist: Artist string.
         title: Title string.
+        album_artist: Optional album artist string for soundtrack/collaboration ladder resolution.
 
     Returns:
         List of (query_artist, query_title) candidate tuples.
@@ -252,6 +258,14 @@ def generate_query_ladder(artist: str, title: str) -> List[Tuple[str, str]]:
         # 4. (artist.replace(';', ',').replace('  ', ' '), strip_features(title))
         comma_artist = artist.replace(";", ",").replace("  ", " ").strip()
         _add(comma_artist, feat_stripped_title)
+
+    # Album artist collaboration priority rungs:
+    clean_aa = album_artist.strip()
+    if clean_aa and clean_aa.lower() != artist.strip().lower():
+        _add(f"{artist.strip()} & {clean_aa}", feat_stripped_title)
+        _add(f"{artist.strip()} & {clean_aa}", title)
+        _add(f"{artist.strip()}, {clean_aa}", feat_stripped_title)
+        _add(f"{artist.strip()}, {clean_aa}", title)
 
     # 1. Exact raw tags
     _add(artist, title)

@@ -319,6 +319,124 @@ class TestTitleFloorAndCollaborationMatching(unittest.TestCase):
         self.assertEqual(lyrics.lines[0].text, "feeling about anything everything Kendrick")
 
 
+class TestAlbumArtistCollaborationLadder(unittest.TestCase):
+    """Test album_artist extraction, matcher collaboration bonus, and provider query ladders."""
+
+    def test_candidate_scoring_with_album_artist(self) -> None:
+        from core.matcher import score_candidate
+
+        # Audio file has artist="Jay Rock", album_artist="Kendrick Lamar"
+        # Candidate has cand_artist="Jay Rock, Kendrick Lamar, Future, James Blake"
+        score = score_candidate(
+            audio_artist="Jay Rock",
+            audio_title="King's Dead",
+            audio_duration_ms=225000,
+            cand_artist="Jay Rock, Kendrick Lamar, Future, James Blake",
+            cand_title="King's Dead",
+            cand_duration_ms=225000,
+            album_artist="Kendrick Lamar",
+        )
+        self.assertGreaterEqual(score, 80.0)
+
+    def test_auto_provider_forwards_album_artist(self) -> None:
+        from core.providers.auto import AutoLyricsProvider
+
+        mock_unison = Mock()
+        mock_unison.search_word_sync.return_value = None
+        mock_lrc_red = Mock()
+        mock_lrc_red.search_word_sync.return_value = None
+        mock_kugou = Mock()
+        mock_kugou.search_word_sync.return_value = None
+
+        auto = AutoLyricsProvider(unison=mock_unison, lrc_red=mock_lrc_red, kugou=mock_kugou)
+
+        result = auto.search_word_sync(
+            artist="Jay Rock",
+            title="King's Dead",
+            duration_ms=225000,
+            album_artist="Kendrick Lamar",
+        )
+        self.assertIsNone(result)
+
+        mock_unison.search_word_sync.assert_called_once_with(
+            artist="Jay Rock",
+            title="King's Dead",
+            duration_ms=225000,
+            album_artist="Kendrick Lamar",
+            config=None,
+        )
+        mock_lrc_red.search_word_sync.assert_called_once_with(
+            artist="Jay Rock",
+            title="King's Dead",
+            duration_ms=225000,
+            album_artist="Kendrick Lamar",
+            config=None,
+        )
+        mock_kugou.search_word_sync.assert_called_once_with(
+            artist="Jay Rock",
+            title="King's Dead",
+            duration_ms=225000,
+            album_artist="Kendrick Lamar",
+            config=None,
+        )
+
+    def test_unison_queries_collaboration_ladder(self) -> None:
+        provider = UnisonProvider()
+        queries_made = []
+
+        def mock_get(url, **kwargs):
+            m = Mock()
+            m.status_code = 200
+            params = kwargs.get("params", {})
+            q = params.get("q", "")
+            queries_made.append(q)
+            m.json.return_value = {"success": True, "data": []}
+            return m
+
+        with patch("requests.get", side_effect=mock_get):
+            provider.search_word_sync(
+                artist="Jay Rock",
+                title="King's Dead",
+                duration_ms=225000,
+                album_artist="Kendrick Lamar",
+            )
+
+        self.assertIn("Jay Rock & Kendrick Lamar King's Dead", queries_made)
+
+    def test_lrc_red_queries_collaboration_ladder(self) -> None:
+        from core.providers.lrc_red import LrcRedProvider
+
+        provider = LrcRedProvider()
+        searched_artists = []
+
+        def mock_query(variant_artist, title, duration_ms, original_artist):
+            searched_artists.append(variant_artist)
+            return None
+
+        orig_query_candidate = provider._query_candidate
+        provider._query_candidate = mock_query  # type: ignore[assignment]
+        try:
+            provider.search_word_sync(
+                artist="Jay Rock",
+                title="King's Dead",
+                duration_ms=225000,
+                album_artist="Kendrick Lamar",
+            )
+        finally:
+            provider._query_candidate = orig_query_candidate
+
+        self.assertIn("Jay Rock & Kendrick Lamar", searched_artists)
+        self.assertIn("Jay Rock, Kendrick Lamar", searched_artists)
+
+    def test_kugou_query_ladder_contains_album_artist(self) -> None:
+        from core.normalizer import generate_query_ladder
+
+        ladder = generate_query_ladder(artist="Jay Rock", title="King's Dead", album_artist="Kendrick Lamar")
+        self.assertIn(("Jay Rock & Kendrick Lamar", "King's Dead"), ladder)
+        self.assertIn(("Jay Rock, Kendrick Lamar", "King's Dead"), ladder)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

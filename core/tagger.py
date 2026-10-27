@@ -19,7 +19,14 @@ from mutagen.oggflac import OggFLAC
 from mutagen.oggopus import OggOpus
 from mutagen.oggvorbis import OggVorbis
 
-from core.models import LyricLine, SongLyrics, SyllableSpan, SyncState, TaggingConfig
+from core.models import (
+    LyricLine,
+    SongLyrics,
+    SyllableSpan,
+    SyncState,
+    TaggingConfig,
+    TrackItem,
+)
 from core.sync_engine import to_enhanced_lrc, to_plain_text, to_ttml
 
 # Regex to detect word/syllable-level timing tags:
@@ -179,6 +186,119 @@ def detect_sync_state(file_path: str) -> SyncState:
 
     # ── 5. Otherwise ───────────────────────────────────────────────────────
     return SyncState.NONE
+
+
+def read_metadata(file_path: str) -> Dict[str, Any]:
+    """Extract metadata (title, artist, album, album_artist, duration_ms) from an audio file.
+
+    Extracts album artist across:
+      - FLAC Vorbis comments: ALBUMARTIST, album_artist, ALBUM ARTIST, albumartist
+      - MP3 ID3: TPE2 tag
+      - MP4 / M4A: aART tag
+
+    Args:
+        file_path: Path to the audio file.
+
+    Returns:
+        Dictionary containing metadata fields.
+    """
+    path = pathlib.Path(file_path)
+    default_title = path.stem
+
+    audio = None
+    if path.is_file():
+        try:
+            audio = mutagen.File(file_path, easy=False)
+        except Exception:
+            audio = None
+
+    title = default_title
+    artist = "Unknown Artist"
+    album = "Unknown Album"
+    album_artist = ""
+    duration_ms = 0
+
+    if audio is not None:
+        if hasattr(audio, "info") and hasattr(audio.info, "length"):
+            duration_ms = int(audio.info.length * 1000)
+
+        def _get_tag_value(keys: List[str]) -> Optional[str]:
+            for container in (audio, getattr(audio, "tags", None)):
+                if container is None:
+                    continue
+                for k in keys:
+                    try:
+                        if hasattr(container, "get"):
+                            val = container.get(k)
+                            if val:
+                                if isinstance(val, (list, tuple)) and len(val) > 0:
+                                    s = str(val[0]).strip()
+                                    if s:
+                                        return s
+                                s = str(val).strip()
+                                if s:
+                                    return s
+                        if hasattr(container, "getall"):
+                            frames = container.getall(k)
+                            if frames:
+                                for fr in frames:
+                                    txt = getattr(fr, "text", None)
+                                    if txt:
+                                        if isinstance(txt, (list, tuple)) and len(txt) > 0:
+                                            s = str(txt[0]).strip()
+                                            if s:
+                                                return s
+                                        s = str(txt).strip()
+                                        if s:
+                                            return s
+                    except Exception:
+                        pass
+            return None
+
+        t = _get_tag_value(["title", "TIT2", "\xa9nam", "©nam"])
+        if t:
+            title = t
+        a = _get_tag_value(["artist", "TPE1", "\xa9ART", "©ART"])
+        if a:
+            artist = a
+        al = _get_tag_value(["album", "TALB", "\xa9alb", "©alb"])
+        if al:
+            album = al
+        aa = _get_tag_value([
+            "ALBUMARTIST",
+            "album_artist",
+            "ALBUM ARTIST",
+            "albumartist",
+            "album artist",
+            "TPE2",
+            "aART",
+        ])
+        if aa:
+            album_artist = aa
+
+    return {
+        "file_path": str(file_path),
+        "title": title,
+        "artist": artist,
+        "album": album,
+        "album_artist": album_artist,
+        "duration_ms": duration_ms,
+    }
+
+
+def read_track_item(file_path: str) -> TrackItem:
+    """Read metadata and sync state from an audio file into a TrackItem."""
+    meta = read_metadata(file_path)
+    sync_state = detect_sync_state(file_path)
+    return TrackItem(
+        file_path=meta["file_path"],
+        title=meta["title"],
+        artist=meta["artist"],
+        album=meta["album"],
+        album_artist=meta["album_artist"],
+        duration_ms=meta["duration_ms"],
+        sync_state=sync_state,
+    )
 
 
 # Regex for parsing LRC/ELRC files

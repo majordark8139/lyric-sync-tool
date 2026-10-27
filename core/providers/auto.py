@@ -31,6 +31,7 @@ class AutoLyricsProvider(BaseLyricsProvider):
         artist: str = "",
         title: str = "",
         duration_ms: int = 0,
+        album_artist: str = "",
         config: Optional[TaggingConfig] = None,
         **kwargs,
     ) -> Optional[SongLyrics]:
@@ -41,6 +42,8 @@ class AutoLyricsProvider(BaseLyricsProvider):
             title = kwargs["title"]
         if "duration_ms" in kwargs and not duration_ms:
             duration_ms = kwargs["duration_ms"]
+        if "album_artist" in kwargs and not album_artist:
+            album_artist = kwargs["album_artist"]
         if "config" in kwargs and config is None:
             config = kwargs["config"]
 
@@ -49,6 +52,7 @@ class AutoLyricsProvider(BaseLyricsProvider):
             artist=artist,
             title=title,
             duration_ms=duration_ms,
+            album_artist=album_artist,
             config=config,
             **kwargs,
         )
@@ -60,6 +64,7 @@ class AutoLyricsProvider(BaseLyricsProvider):
             artist=artist,
             title=title,
             duration_ms=duration_ms,
+            album_artist=album_artist,
             config=config,
             **kwargs,
         )
@@ -71,6 +76,7 @@ class AutoLyricsProvider(BaseLyricsProvider):
             artist=artist,
             title=title,
             duration_ms=duration_ms,
+            album_artist=album_artist,
             config=config,
             **kwargs,
         )

@@ -102,6 +102,15 @@ class TestNormalizerAndLadder(unittest.TestCase):
         # Verify deduplication
         self.assertEqual(len(ladder), len(set(ladder)))
 
+    def test_generate_query_ladder_with_album_artist(self) -> None:
+        """Verify generate_query_ladder includes album artist collaboration variants."""
+        ladder = generate_query_ladder("Jay Rock", "King's Dead", album_artist="Kendrick Lamar")
+
+        # Collaboration variants must be present
+        self.assertIn(("Jay Rock & Kendrick Lamar", "King's Dead"), ladder)
+        self.assertIn(("Jay Rock, Kendrick Lamar", "King's Dead"), ladder)
+        self.assertEqual(len(ladder), len(set(ladder)))
+
     def test_normalize_punctuation(self) -> None:
         """Verify normalization of curly quotes, full-width brackets, and long dashes."""
         raw = "‘Artist’ — “Title” （feat. Singer） 【VIP】"

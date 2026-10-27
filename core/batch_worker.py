@@ -17,7 +17,7 @@ from core.providers.base import BaseLyricsProvider
 from core.providers.kugou import KugouProvider
 from core.providers.lrc_red import LrcRedProvider
 from core.providers.unison import UnisonProvider
-from core.tagger import apply_lyrics, detect_sync_state
+from core.tagger import apply_lyrics, detect_sync_state, read_metadata
 
 _AUDIO_EXTENSIONS = {".flac", ".mp3", ".m4a", ".ogg"}
 
@@ -88,33 +88,18 @@ class ScannerWorker(QThread):
                     continue
 
                 full_path = os.path.join(dirpath, fname)
-                try:
-                    audio = mutagen.File(full_path, easy=False)
-                except Exception:
-                    audio = None
-
-                title = _extract_tag_string(audio, ["title", "TIT2", "\xa9nam", "©nam"], default=pathlib.Path(fname).stem)
-                artist = _extract_tag_string(audio, ["artist", "TPE1", "\xa9ART", "©ART"], default="Unknown Artist")
-                album = _extract_tag_string(audio, ["album", "TALB", "\xa9alb", "©alb"], default="Unknown Album")
-                album_artist = _extract_tag_string(audio, ["albumartist", "album_artist", "TPE2", "aART"], default="")
-
-                duration_ms = 0
-                if audio and hasattr(audio, "info") and hasattr(audio.info, "length"):
-                    duration_ms = int(audio.info.length * 1000)
-
-                del audio
-
+                meta = read_metadata(full_path)
                 sync_state = detect_sync_state(full_path)
 
                 item = TrackItem(
                     file_path=full_path,
-                    title=title or pathlib.Path(fname).stem,
-                    artist=artist or "Unknown Artist",
-                    duration_ms=duration_ms,
+                    title=meta["title"] or pathlib.Path(fname).stem,
+                    artist=meta["artist"] or "Unknown Artist",
+                    duration_ms=meta["duration_ms"],
                     sync_state=sync_state,
                     matched_lyrics=None,
-                    album=album or "Unknown Album",
-                    album_artist=album_artist,
+                    album=meta["album"] or "Unknown Album",
+                    album_artist=meta["album_artist"],
                 )
 
                 count += 1
@@ -192,6 +177,7 @@ class BatchTaggerWorker(QThread):
                     artist=track.artist,
                     title=track.title,
                     duration_ms=track.duration_ms,
+                    album_artist=getattr(track, "album_artist", ""),
                     config=self._config,
                 )
 
@@ -202,6 +188,7 @@ class BatchTaggerWorker(QThread):
                         artist=track.artist,
                         title=track.title,
                         duration_ms=track.duration_ms,
+                        album_artist=getattr(track, "album_artist", ""),
                         config=self._config,
                     )
 
@@ -212,6 +199,7 @@ class BatchTaggerWorker(QThread):
                         artist=track.artist,
                         title=track.title,
                         duration_ms=track.duration_ms,
+                        album_artist=getattr(track, "album_artist", ""),
                         config=self._config,
                     )
             else:
@@ -221,6 +209,7 @@ class BatchTaggerWorker(QThread):
                     artist=track.artist,
                     title=track.title,
                     duration_ms=track.duration_ms,
+                    album_artist=getattr(track, "album_artist", ""),
                     config=self._config,
                 )
 

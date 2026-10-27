@@ -707,6 +707,86 @@ class TestNoctisBackgroundVocals(unittest.TestCase):
         self.assertIn("Let's go", ttml_out)
 
 
+class TestReadMetadata(unittest.TestCase):
+    """Tests for core/tagger.py read_metadata and read_track_item."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.dir_path = pathlib.Path(self.temp_dir.name)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_read_metadata_flac_album_artist(self) -> None:
+        from core.tagger import read_metadata, read_track_item
+
+        track = str(self.dir_path / "song.flac")
+        _create_minimal_flac(track)
+        flac = FLAC(track)
+        flac["TITLE"] = ["King's Dead"]
+        flac["ARTIST"] = ["Jay Rock"]
+        flac["ALBUM"] = ["Black Panther: The Album"]
+        flac["ALBUMARTIST"] = ["Kendrick Lamar"]
+        flac.save()
+
+        meta = read_metadata(track)
+        self.assertEqual(meta["title"], "King's Dead")
+        self.assertEqual(meta["artist"], "Jay Rock")
+        self.assertEqual(meta["album"], "Black Panther: The Album")
+        self.assertEqual(meta["album_artist"], "Kendrick Lamar")
+
+        item = read_track_item(track)
+        self.assertEqual(item.album_artist, "Kendrick Lamar")
+        self.assertEqual(item.artist, "Jay Rock")
+
+    def test_read_metadata_mp3_tpe2(self) -> None:
+        from mutagen.id3 import TALB, TIT2, TPE1, TPE2
+        from core.tagger import read_metadata, read_track_item
+
+        track = str(self.dir_path / "song.mp3")
+        _create_minimal_mp3(track)
+        mp3 = MP3(track)
+        if mp3.tags is None:
+            mp3.add_tags()
+        mp3.tags.add(TIT2(encoding=3, text="All The Stars"))
+        mp3.tags.add(TPE1(encoding=3, text="Kendrick Lamar"))
+        mp3.tags.add(TALB(encoding=3, text="Black Panther: The Album"))
+        mp3.tags.add(TPE2(encoding=3, text="Various Artists"))
+        mp3.save(v2_version=3)
+
+        meta = read_metadata(track)
+        self.assertEqual(meta["title"], "All The Stars")
+        self.assertEqual(meta["artist"], "Kendrick Lamar")
+        self.assertEqual(meta["album_artist"], "Various Artists")
+
+        item = read_track_item(track)
+        self.assertEqual(item.album_artist, "Various Artists")
+
+    def test_read_metadata_mp4_aart(self) -> None:
+        from core.tagger import read_metadata
+
+        mock_audio = MagicMock()
+        mock_audio.tags = {
+            "\xa9nam": ["Pray For Me"],
+            "\xa9ART": ["The Weeknd"],
+            "\xa9alb": ["Black Panther"],
+            "aART": ["Kendrick Lamar"],
+        }
+        mock_audio.get = MagicMock(side_effect=lambda k: mock_audio.tags.get(k))
+        mock_audio.info = MagicMock()
+        mock_audio.info.length = 211.0
+
+        track = str(self.dir_path / "track.m4a")
+        pathlib.Path(track).touch()
+
+        with patch("mutagen.File", return_value=mock_audio):
+            meta = read_metadata(track)
+            self.assertEqual(meta["title"], "Pray For Me")
+            self.assertEqual(meta["artist"], "The Weeknd")
+            self.assertEqual(meta["album_artist"], "Kendrick Lamar")
+            self.assertEqual(meta["duration_ms"], 211000)
+
+
 if __name__ == "__main__":
     unittest.main()
 

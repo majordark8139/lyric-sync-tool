@@ -73,50 +73,25 @@ class LrcRedProvider(BaseLyricsProvider):
         """Return the unique provider identifier."""
         return "lrc.red"
 
-    def search_word_sync(
+    def _query_candidate(
         self,
-        artist: str = "",
-        title: str = "",
-        duration_ms: int = 0,
-        **kwargs,
+        variant_artist: str,
+        title: str,
+        duration_ms: int,
+        original_artist: str = "",
     ) -> Optional[SongLyrics]:
-        """Search and fetch synchronized lyrics from lrc.red.
-
-        Supports both search_word_sync(artist=..., title=...) and
-        search_word_sync(title=..., artist=...).
-
-        Args:
-            artist: Track artist.
-            title: Track title.
-            duration_ms: Track duration in milliseconds.
-            **kwargs: Optional extra parameters or config.
-
-        Returns:
-            Populated SongLyrics if matched, otherwise None.
-        """
-        if "artist" in kwargs and not artist:
-            artist = kwargs["artist"]
-        if "title" in kwargs and not title:
-            title = kwargs["title"]
-        if "duration_ms" in kwargs and not duration_ms:
-            duration_ms = kwargs["duration_ms"]
-
-        if not title and not artist:
-            return None
-
-        primary_title = title
-        primary_artist = artist
+        """Query lrc.red using a specific artist variant."""
         duration_sec = int(round(duration_ms / 1000.0)) if duration_ms > 0 else 0
 
         # Candidate query pairs to support flexible (artist, title) or (title, artist)
         candidate_pairs = []
-        if primary_title and primary_artist:
-            candidate_pairs.append((primary_title, extract_primary_artist(primary_artist)))
-            candidate_pairs.append((primary_artist, extract_primary_artist(primary_title)))
-        elif primary_title:
-            candidate_pairs.append((primary_title, ""))
+        if title and variant_artist:
+            candidate_pairs.append((title, variant_artist))
+            candidate_pairs.append((variant_artist, title))
+        elif title:
+            candidate_pairs.append((title, ""))
         else:
-            candidate_pairs.append(("", extract_primary_artist(primary_artist)))
+            candidate_pairs.append(("", variant_artist))
 
         api_host_available = True
 
@@ -140,13 +115,13 @@ class LrcRedProvider(BaseLyricsProvider):
                     c_dur_sec = float(data.get("duration", 0) or 0)
                     c_dur = int(round(c_dur_sec * 1000)) if c_dur_sec > 0 else duration_ms
                     if c_art or c_tit:
-                        s1 = score_candidate(primary_artist, primary_title, duration_ms, c_art, c_tit, c_dur)
-                        s2 = score_candidate(primary_title, primary_artist, duration_ms, c_art, c_tit, c_dur)
+                        s1 = score_candidate(original_artist or variant_artist, title, duration_ms, c_art, c_tit, c_dur)
+                        s2 = score_candidate(variant_artist, title, duration_ms, c_art, c_tit, c_dur)
                         if max(s1, s2) < 70.0:
                             continue
                     synced_lrc = data.get("syncedLyrics") or data.get("lyrics")
                     lyrics = _process_lyrics(synced_lrc)
-                    if lyrics:
+                    if lyrics and getattr(lyrics, "is_word_synced", False):
                         return lyrics
             except requests.exceptions.ConnectionError:
                 api_host_available = False
@@ -156,13 +131,13 @@ class LrcRedProvider(BaseLyricsProvider):
 
         # ── 2. Search fallback (/api/search) ──
         search_queries = []
-        if primary_title and primary_artist:
-            search_queries.append(f"{primary_title} {extract_primary_artist(primary_artist)}".strip())
-            search_queries.append(f"{primary_artist} {extract_primary_artist(primary_title)}".strip())
-        elif primary_title:
-            search_queries.append(primary_title)
-        elif primary_artist:
-            search_queries.append(primary_artist)
+        if title and variant_artist:
+            search_queries.append(f"{title} {variant_artist}".strip())
+            search_queries.append(f"{variant_artist} {title}".strip())
+        elif title:
+            search_queries.append(title)
+        elif variant_artist:
+            search_queries.append(variant_artist)
 
         if api_host_available:
             for query_str in search_queries:
@@ -177,8 +152,8 @@ class LrcRedProvider(BaseLyricsProvider):
                             c_tit = str(item.get("trackName") or item.get("title") or "")
                             c_dur_sec = float(item.get("duration", 0) or 0)
                             c_dur = int(round(c_dur_sec * 1000)) if c_dur_sec > 0 else duration_ms
-                            s1 = score_candidate(primary_artist, primary_title, duration_ms, c_art, c_tit, c_dur)
-                            s2 = score_candidate(primary_title, primary_artist, duration_ms, c_art, c_tit, c_dur)
+                            s1 = score_candidate(original_artist or variant_artist, title, duration_ms, c_art, c_tit, c_dur)
+                            s2 = score_candidate(variant_artist, title, duration_ms, c_art, c_tit, c_dur)
                             score_val = max(s1, s2)
                             scored.append((score_val, item))
 
@@ -187,7 +162,7 @@ class LrcRedProvider(BaseLyricsProvider):
                             if score_val >= 70.0:
                                 synced_lrc = item.get("syncedLyrics") or item.get("lyrics")
                                 lyrics = _process_lyrics(synced_lrc)
-                                if lyrics:
+                                if lyrics and getattr(lyrics, "is_word_synced", False):
                                     return lyrics
                 except requests.exceptions.ConnectionError:
                     break
@@ -195,8 +170,7 @@ class LrcRedProvider(BaseLyricsProvider):
                     pass
 
         # ── 3. Web search fallback (lrc.red) when api.lrc.red has DNS/connection issues ──
-        # Try lrc.red search.json
-        for q_cand in search_queries + [primary_title, primary_artist]:
+        for q_cand in search_queries + [variant_artist, title]:
             if not q_cand:
                 continue
             try:
@@ -210,8 +184,8 @@ class LrcRedProvider(BaseLyricsProvider):
                         c_tit = str(h.get("title", ""))
                         c_dur_sec = float(h.get("duration", 0) or 0)
                         c_dur = int(round(c_dur_sec * 1000)) if c_dur_sec > 0 else duration_ms
-                        s1 = score_candidate(primary_artist, primary_title, duration_ms, c_art, c_tit, c_dur)
-                        s2 = score_candidate(primary_title, primary_artist, duration_ms, c_art, c_tit, c_dur)
+                        s1 = score_candidate(original_artist or variant_artist, title, duration_ms, c_art, c_tit, c_dur)
+                        s2 = score_candidate(variant_artist, title, duration_ms, c_art, c_tit, c_dur)
                         score_val = max(s1, s2)
                         scored.append((score_val, h))
 
@@ -222,9 +196,84 @@ class LrcRedProvider(BaseLyricsProvider):
                             lrc_resp = _http_get(lrc_url, timeout=5.0)
                             if lrc_resp.status_code == 200:
                                 lyrics = _process_lyrics(lrc_resp.text)
-                                if lyrics:
+                                if lyrics and getattr(lyrics, "is_word_synced", False):
                                     return lyrics
             except Exception:
                 pass
+
+        return None
+
+    def search_word_sync(
+        self,
+        artist: str = "",
+        title: str = "",
+        duration_ms: int = 0,
+        album_artist: str = "",
+        **kwargs,
+    ) -> Optional[SongLyrics]:
+        """Search and fetch synchronized lyrics from lrc.red using a collaboration query ladder.
+
+        Supports both search_word_sync(artist=..., title=...) and
+        search_word_sync(title=..., artist=...).
+
+        Args:
+            artist: Track artist.
+            title: Track title.
+            duration_ms: Track duration in milliseconds.
+            album_artist: Track album artist for collaboration ladder resolution.
+            **kwargs: Optional extra parameters or config.
+
+        Returns:
+            Populated SongLyrics if matched, otherwise None.
+        """
+        if "artist" in kwargs and not artist:
+            artist = kwargs["artist"]
+        if "title" in kwargs and not title:
+            title = kwargs["title"]
+        if "duration_ms" in kwargs and not duration_ms:
+            duration_ms = kwargs["duration_ms"]
+        if "album_artist" in kwargs and not album_artist:
+            album_artist = kwargs["album_artist"]
+
+        clean_artist = artist.strip()
+        clean_title = title.strip()
+        clean_album_artist = album_artist.strip()
+
+        if not clean_title and not clean_artist:
+            return None
+
+        # Build candidate artist variations ladder:
+        # 1. Primary: artist
+        artist_variants: List[str] = []
+        if clean_artist:
+            artist_variants.append(clean_artist)
+
+        # 2. If album_artist exists and differs from artist (case-insensitive):
+        if clean_album_artist and clean_album_artist.lower() != clean_artist.lower():
+            v_amp = f"{clean_artist} & {clean_album_artist}".strip()
+            if v_amp and v_amp not in artist_variants:
+                artist_variants.append(v_amp)
+            v_comma = f"{clean_artist}, {clean_album_artist}".strip()
+            if v_comma and v_comma not in artist_variants:
+                artist_variants.append(v_comma)
+
+        # 3. If artist contains common feat delimiters (feat., ft., &, /, etc.):
+        primary_extracted = extract_primary_artist(clean_artist).strip()
+        if primary_extracted and primary_extracted not in artist_variants:
+            artist_variants.append(primary_extracted)
+
+        if not artist_variants and clean_album_artist:
+            artist_variants.append(clean_album_artist)
+
+        # Query lrc.red across each artist variant
+        for art_variant in artist_variants:
+            lyrics = self._query_candidate(
+                variant_artist=art_variant,
+                title=clean_title,
+                duration_ms=duration_ms,
+                original_artist=clean_artist,
+            )
+            if lyrics and getattr(lyrics, "is_word_synced", False):
+                return lyrics
 
         return None

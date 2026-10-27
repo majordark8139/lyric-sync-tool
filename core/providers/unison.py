@@ -83,6 +83,7 @@ class UnisonProvider(BaseLyricsProvider):
         artist: str = "",
         title: str = "",
         duration_ms: int = 0,
+        album_artist: str = "",
         **kwargs,
     ) -> Optional[SongLyrics]:
         """Search and fetch verified richsync word-synced lyrics from Unison.
@@ -91,6 +92,7 @@ class UnisonProvider(BaseLyricsProvider):
             artist: Track artist.
             title: Track title.
             duration_ms: Track duration in milliseconds.
+            album_artist: Track album artist for collaboration ladder resolution.
             **kwargs: Optional configuration or extra parameters.
 
         Returns:
@@ -102,9 +104,12 @@ class UnisonProvider(BaseLyricsProvider):
             title = kwargs["title"]
         if "duration_ms" in kwargs and not duration_ms:
             duration_ms = kwargs["duration_ms"]
+        if "album_artist" in kwargs and not album_artist:
+            album_artist = kwargs["album_artist"]
 
         clean_title = title.strip()
         clean_artist = artist.strip()
+        clean_album_artist = album_artist.strip()
 
         if not clean_title and not clean_artist:
             return None
@@ -114,6 +119,14 @@ class UnisonProvider(BaseLyricsProvider):
         combined = f"{clean_artist} {clean_title}".strip()
         if combined:
             queries.append(combined)
+
+        if clean_album_artist and clean_album_artist.lower() != clean_artist.lower():
+            v_amp = f"{clean_artist} & {clean_album_artist} {clean_title}".strip()
+            if v_amp and v_amp not in queries:
+                queries.append(v_amp)
+            v_comma = f"{clean_artist}, {clean_album_artist} {clean_title}".strip()
+            if v_comma and v_comma not in queries:
+                queries.append(v_comma)
 
         primary = extract_primary_artist(clean_artist).strip()
         if primary and primary != clean_artist:
@@ -125,6 +138,8 @@ class UnisonProvider(BaseLyricsProvider):
             queries.append(clean_title)
         if clean_artist and clean_artist not in queries:
             queries.append(clean_artist)
+        if clean_album_artist and clean_album_artist not in queries:
+            queries.append(clean_album_artist)
 
         for query in queries:
             try:
@@ -206,6 +221,18 @@ class UnisonProvider(BaseLyricsProvider):
                         cand_duration_ms=hit_dur_ms,
                     )
                     score = max(score_forward, score_reversed)
+
+                    if clean_album_artist and clean_album_artist.lower() != clean_artist.lower():
+                        collab_artist = f"{clean_artist} & {clean_album_artist}"
+                        s_collab = score_candidate(
+                            audio_artist=collab_artist,
+                            audio_title=clean_title,
+                            audio_duration_ms=duration_ms,
+                            cand_artist=hit_artist,
+                            cand_title=hit_song,
+                            cand_duration_ms=hit_dur_ms,
+                        )
+                        score = max(score, s_collab)
 
                     if score < 70.0:
                         continue

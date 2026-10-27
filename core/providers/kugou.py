@@ -206,6 +206,7 @@ class KugouProvider(BaseLyricsProvider):
         artist: str = "",
         title: str = "",
         duration_ms: int = 0,
+        album_artist: str = "",
         config: Optional[TaggingConfig] = None,
         **kwargs,
     ) -> Optional[SongLyrics]:
@@ -215,6 +216,7 @@ class KugouProvider(BaseLyricsProvider):
             artist: Primary artist name.
             title: Song title as tagged on the audio file.
             duration_ms: Track duration in milliseconds.
+            album_artist: Optional album artist name for collaboration ladder resolution.
             config: Optional TaggingConfig controlling duration tolerance and ladder fallback.
             **kwargs: Extra parameters.
 
@@ -228,6 +230,8 @@ class KugouProvider(BaseLyricsProvider):
             title = kwargs["title"]
         if "duration_ms" in kwargs and not duration_ms:
             duration_ms = kwargs["duration_ms"]
+        if "album_artist" in kwargs and not album_artist:
+            album_artist = kwargs["album_artist"]
         if "config" in kwargs and config is None:
             config = kwargs["config"]
 
@@ -236,7 +240,7 @@ class KugouProvider(BaseLyricsProvider):
         if config and not config.smart_fallback:
             ladder: List[tuple] = [(artist, title)]
         else:
-            ladder = generate_query_ladder(artist, title)
+            ladder = generate_query_ladder(artist, title, album_artist=album_artist)
             # Append 3 extra clean_kugou_query steps for tracks with brackets/features/remixes
             # to handle cases like "Save Your Tears (Remix) (With Ariana Grande)"
             clean_artist = clean_kugou_query(artist)
@@ -320,6 +324,9 @@ class KugouProvider(BaseLyricsProvider):
                 s1 = score_candidate(artist, title, duration_ms, c_artist, c_title, eff_dur)
                 s2 = score_candidate(title, artist, duration_ms, c_artist, c_title, eff_dur)
                 score_val = max(s1, s2)
+                if album_artist and album_artist.strip().lower() != artist.strip().lower():
+                    s3 = score_candidate(f"{artist.strip()} & {album_artist.strip()}", title, duration_ms, c_artist, c_title, eff_dur)
+                    score_val = max(score_val, s3)
                 if score_val < 70.0:
                     continue
 
@@ -376,7 +383,18 @@ class KugouProvider(BaseLyricsProvider):
                             cand_title=c_title,
                             cand_duration_ms=eff_dur,
                         )
-                        scored.append((max(s1, s2), cand))
+                        cand_score = max(s1, s2)
+                        if album_artist and album_artist.strip().lower() != artist.strip().lower():
+                            s3 = score_candidate(
+                                audio_artist=f"{artist.strip()} & {album_artist.strip()}",
+                                audio_title=title,
+                                audio_duration_ms=duration_ms,
+                                cand_artist=c_artist,
+                                cand_title=c_title,
+                                cand_duration_ms=eff_dur,
+                            )
+                            cand_score = max(cand_score, s3)
+                        scored.append((cand_score, cand))
 
                     # Sort highest-scoring candidate first
                     scored.sort(key=lambda x: x[0], reverse=True)

@@ -159,6 +159,10 @@ def score_candidate(
 
     # ── 3. Artist Similarity (0 to 20 pts) ──
     artist_ratio = _compute_artist_similarity(audio_artist, cand_artist)
+    audio_album_artist = kwargs.get("album_artist") or kwargs.get("audio_album_artist") or ""
+    if audio_album_artist and audio_album_artist.strip().lower() != audio_artist.strip().lower():
+        collab_ratio = _compute_artist_similarity(f"{audio_artist} & {audio_album_artist}", cand_artist)
+        artist_ratio = max(artist_ratio, collab_ratio)
     artist_score = artist_ratio * 20.0
 
     total_score = duration_score + title_score + artist_score
