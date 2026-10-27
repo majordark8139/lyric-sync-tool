@@ -4,7 +4,7 @@ import os
 import pathlib
 import re
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 # Ensure project root is in sys.path for direct script execution
 _PROJECT_ROOT = str(pathlib.Path(__file__).resolve().parent.parent)
@@ -13,14 +13,26 @@ if _PROJECT_ROOT not in sys.path:
 
 import mutagen
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QAction, QColor, QDragEnterEvent, QDragMoveEvent, QDropEvent, QFont, QKeyEvent, QKeySequence
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QCursor,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QFont,
+    QKeyEvent,
+    QKeySequence,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -31,12 +43,14 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QSplitter,
     QStatusBar,
     QTabWidget,
     QTextEdit,
     QToolBar,
     QToolButton,
+    QToolTip,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -199,20 +213,57 @@ class _TableTreeCompat:
                 curr += 1
 
 class DeleteLyricsDialog(QDialog):
-    """Granular multi-format lyrics deletion dialog."""
+    """Granular multi-format lyrics deletion dialog with optional scope selection."""
 
-    def __init__(self, parent: Optional[QWidget] = None, track_count: int = 1) -> None:
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        track_count: int = 1,
+        show_scope: bool = False,
+        checked_count: int = 0,
+        total_count: int = 0,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Delete Lyrics")
         self.setModal(True)
         self.setMinimumWidth(380)
 
+        self.show_scope = show_scope
+        self.checked_count = checked_count
+        self.total_count = total_count
+
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
         layout.setContentsMargins(18, 18, 18, 18)
 
-        # Warning / prompt text
-        lbl_warning = QLabel("Select the lyric formats you wish to remove from the selected track(s):")
+        if self.show_scope:
+            scope_box = QGroupBox("Scope Selection")
+            scope_layout = QVBoxLayout(scope_box)
+            scope_layout.setSpacing(8)
+
+            self.scope_group = QButtonGroup(self)
+            self.rb_selected = QRadioButton(f"Selected tracks only ({checked_count} tracks checked)")
+            self.rb_all = QRadioButton(f"All tracks ({total_count} tracks)")
+
+            self.scope_group.addButton(self.rb_selected)
+            self.scope_group.addButton(self.rb_all)
+
+            scope_layout.addWidget(self.rb_selected)
+            scope_layout.addWidget(self.rb_all)
+
+            if checked_count > 0:
+                self.rb_selected.setChecked(True)
+            else:
+                self.rb_all.setChecked(True)
+                self.rb_selected.setEnabled(False)
+
+            layout.addWidget(scope_box)
+
+            lbl_warning = QLabel("Select the lyric formats you wish to remove:")
+        else:
+            # Warning / prompt text
+            lbl_warning = QLabel("Select the lyric formats you wish to remove from the selected track(s):")
+
         lbl_warning.setWordWrap(True)
         lbl_warning.setStyleSheet("font-weight: 500; font-size: 13px; line-height: 1.4;")
         layout.addWidget(lbl_warning)
@@ -291,6 +342,12 @@ class DeleteLyricsDialog(QDialog):
             self.cb_ttml.isChecked(),
         ])
         self.btn_delete.setEnabled(has_any)
+
+    @property
+    def scope(self) -> str:
+        if hasattr(self, "rb_selected") and self.rb_selected.isChecked():
+            return "selected"
+        return "all"
 
     @property
     def delete_embedded(self) -> bool:
@@ -421,10 +478,17 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        self.chk_missing_only = QCheckBox("Select Missing Word Sync Only")
-        self.chk_missing_only.setChecked(True)
-        self.chk_missing_only.toggled.connect(self._apply_missing_filter)
-        toolbar.addWidget(self.chk_missing_only)
+        self.selection_combo = QComboBox()
+        self.selection_combo.addItems([
+            "Select Missing Word Sync Only",
+            "Select Word Synced Only",
+            "Select All",
+            "Deselect All",
+        ])
+        self.selection_combo.setCurrentText("Select Missing Word Sync Only")
+        self.selection_combo.currentTextChanged.connect(self._apply_selection_filter)
+        self.selection_combo.activated.connect(lambda _: self._apply_selection_filter())
+        toolbar.addWidget(self.selection_combo)
 
         toolbar.addSeparator()
 
@@ -437,6 +501,42 @@ class MainWindow(QMainWindow):
         self.btn_cancel_tagging.setEnabled(False)
         self.btn_cancel_tagging.clicked.connect(self._on_cancel_tagging_clicked)
         toolbar.addWidget(self.btn_cancel_tagging)
+
+        self.btn_cleanup = QPushButton("🧹 Clean Up")
+        self.btn_cleanup.setStyleSheet("font-weight: 500;")
+        self.btn_cleanup.clicked.connect(self._on_cleanup_clicked)
+        toolbar.addWidget(self.btn_cleanup)
+
+        self.btn_cleanup_info = QToolButton()
+        self.btn_cleanup_info.setText("ⓘ")
+        cleanup_tooltip = (
+            "Batch remove embedded lyric tags and external lyric files "
+            "(.lrc, .elrc, .ttml) from selected tracks or the entire library."
+        )
+        self.btn_cleanup_info.setToolTip(cleanup_tooltip)
+        self.btn_cleanup_info.setStyleSheet("""
+            QToolButton {
+                border: 1px solid #555;
+                border-radius: 9px;
+                min-width: 18px;
+                max-width: 18px;
+                min-height: 18px;
+                max-height: 18px;
+                font-size: 11px;
+                font-weight: bold;
+                color: #aaa;
+                background: transparent;
+            }
+            QToolButton:hover {
+                border-color: #ef4444;
+                color: #ef4444;
+                background: rgba(239, 68, 68, 0.1);
+            }
+        """)
+        self.btn_cleanup_info.clicked.connect(
+            lambda: QToolTip.showText(QCursor.pos(), cleanup_tooltip, self.btn_cleanup_info)
+        )
+        toolbar.addWidget(self.btn_cleanup_info)
 
         # ── Central Splitter ──
         self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -717,34 +817,77 @@ class MainWindow(QMainWindow):
         finally:
             self._blocking_checks = False
 
+    @property
+    def chk_missing_only(self) -> Any:
+        class _CompatCheck:
+            def __init__(self, combo: QComboBox):
+                self._combo = combo
+
+            def isChecked(self) -> bool:
+                return self._combo.currentText() == "Select Missing Word Sync Only"
+
+            def setChecked(self, val: bool) -> None:
+                if val:
+                    self._combo.setCurrentText("Select Missing Word Sync Only")
+                else:
+                    self._combo.setCurrentText("Select All")
+
+        return _CompatCheck(self.selection_combo)
+
     def _apply_missing_filter(self) -> None:
-        missing_only = self.chk_missing_only.isChecked()
-        overwrite = self.config.overwrite_existing_word_sync
+        self._apply_selection_filter()
+
+    def _apply_selection_filter(self, mode: Optional[Union[str, int]] = None) -> None:
+        if not hasattr(self, "selection_combo"):
+            return
+        if not isinstance(mode, str):
+            mode = self.selection_combo.currentText()
 
         self._blocking_checks = True
         try:
             for i in range(self.tree.topLevelItemCount()):
                 album_item = self.tree.topLevelItem(i)
-                any_checked = False
-                for j in range(album_item.childCount()):
+                child_count = album_item.childCount()
+                checked_count = 0
+                for j in range(child_count):
                     child = album_item.child(j)
                     track: Optional[TrackItem] = child.data(0, Qt.ItemDataRole.UserRole)
                     if not track:
                         continue
 
-                    if missing_only:
-                        if not overwrite and track.sync_state == SyncState.WORD:
-                            child.setCheckState(0, Qt.CheckState.Unchecked)
-                            self._dim_item(child, True)
-                        else:
-                            child.setCheckState(0, Qt.CheckState.Checked)
-                            self._dim_item(child, False)
-                            any_checked = True
-                    else:
-                        self._dim_item(child, False)
-                        any_checked = True
+                    is_word = (
+                        track.sync_state == SyncState.WORD
+                        or track.sync_state == "WORD"
+                        or getattr(track.sync_state, "name", "") == "WORD"
+                    )
 
-                album_item.setCheckState(0, Qt.CheckState.Checked if any_checked else Qt.CheckState.Unchecked)
+                    if mode == "Select Missing Word Sync Only":
+                        should_check = not is_word
+                    elif mode == "Select Word Synced Only":
+                        should_check = is_word
+                    elif mode == "Select All":
+                        should_check = True
+                    elif mode == "Deselect All":
+                        should_check = False
+                    else:
+                        should_check = not is_word
+
+                    if should_check:
+                        child.setCheckState(0, Qt.CheckState.Checked)
+                        self._dim_item(child, False)
+                        self._apply_item_styling(child, track)
+                        checked_count += 1
+                    else:
+                        child.setCheckState(0, Qt.CheckState.Unchecked)
+                        self._dim_item(child, True)
+
+                if child_count > 0:
+                    if checked_count == child_count:
+                        album_item.setCheckState(0, Qt.CheckState.Checked)
+                    elif checked_count == 0:
+                        album_item.setCheckState(0, Qt.CheckState.Unchecked)
+                    else:
+                        album_item.setCheckState(0, Qt.CheckState.PartiallyChecked)
         finally:
             self._blocking_checks = False
 
@@ -859,6 +1002,99 @@ class MainWindow(QMainWindow):
                 track.matched_lyrics = updated_lyrics
                 self.preview_widget.set_lyrics(updated_lyrics, track.duration_ms)
 
+    def _execute_lyrics_deletion(
+        self,
+        target_items: List[QTreeWidgetItem],
+        del_emb: bool,
+        del_lrc: bool,
+        del_elrc: bool,
+        del_ttml: bool,
+    ) -> None:
+        count = len(target_items)
+        for item in target_items:
+            track: Optional[TrackItem] = item.data(0, Qt.ItemDataRole.UserRole)
+            if not track:
+                continue
+            strip_lyrics(
+                track.file_path,
+                delete_embedded=del_emb,
+                delete_lrc=del_lrc,
+                delete_elrc=del_elrc,
+                delete_ttml=del_ttml,
+            )
+            track.sync_state = detect_sync_state(track.file_path)
+            if track.sync_state == SyncState.NONE:
+                track.matched_lyrics = None
+                item.setText(3, SyncState.NONE.name)
+                item.setText(4, "Lyrics Deleted")
+            else:
+                track.matched_lyrics = read_track_lyrics(track.file_path)
+                item.setText(3, track.sync_state.name)
+                item.setText(4, "Ready")
+            self._apply_item_styling(item, track)
+
+        if self._current_active_item in target_items:
+            act_track: Optional[TrackItem] = self._current_active_item.data(0, Qt.ItemDataRole.UserRole)
+            lyrics = act_track.matched_lyrics if act_track else None
+            dur = act_track.duration_ms if act_track else 0
+            self.preview_widget.set_lyrics(lyrics, dur)
+            self.editor_widget.set_lyrics(lyrics)
+
+        self.statusBar().showMessage(f"Stripped selected lyrics from {count} file(s).")
+        self._apply_selection_filter()
+
+    def _on_cleanup_clicked(self) -> None:
+        all_items: List[QTreeWidgetItem] = []
+        checked_items: List[QTreeWidgetItem] = []
+        for i in range(self.tree.topLevelItemCount()):
+            album_node = self.tree.topLevelItem(i)
+            for j in range(album_node.childCount()):
+                child = album_node.child(j)
+                all_items.append(child)
+                if child.checkState(0) == Qt.CheckState.Checked:
+                    checked_items.append(child)
+
+        total_count = len(all_items)
+        if total_count == 0:
+            QMessageBox.information(self, "Clean Up", "No tracks loaded in the queue.")
+            return
+
+        checked_count = len(checked_items)
+
+        dlg = DeleteLyricsDialog(
+            parent=self,
+            track_count=checked_count if checked_count > 0 else total_count,
+            show_scope=True,
+            checked_count=checked_count,
+            total_count=total_count,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        target_items = checked_items if dlg.scope == "selected" else all_items
+        count = len(target_items)
+        if count == 0:
+            QMessageBox.information(self, "Clean Up", "No tracks selected to clean up.")
+            return
+
+        reply = QMessageBox.warning(
+            self,
+            "Confirm Deletion",
+            f"Are you sure you want to permanently delete the selected lyric format(s) from {count} track(s)? This action cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._execute_lyrics_deletion(
+            target_items,
+            del_emb=dlg.delete_embedded,
+            del_lrc=dlg.delete_lrc,
+            del_elrc=dlg.delete_elrc,
+            del_ttml=dlg.delete_ttml,
+        )
+
     def _show_context_menu(self, pos) -> None:
         selected_items = [it for it in self.tree.selectedItems() if it.parent() is not None]
         if not selected_items:
@@ -874,40 +1110,13 @@ class MainWindow(QMainWindow):
             count = len(selected_items)
             dlg = DeleteLyricsDialog(parent=self, track_count=count)
             if dlg.exec() == QDialog.DialogCode.Accepted:
-                del_emb = dlg.delete_embedded
-                del_lrc = dlg.delete_lrc
-                del_elrc = dlg.delete_elrc
-                del_ttml = dlg.delete_ttml
-
-                for item in selected_items:
-                    track: TrackItem = item.data(0, Qt.ItemDataRole.UserRole)
-                    strip_lyrics(
-                        track.file_path,
-                        delete_embedded=del_emb,
-                        delete_lrc=del_lrc,
-                        delete_elrc=del_elrc,
-                        delete_ttml=del_ttml,
-                    )
-                    track.sync_state = detect_sync_state(track.file_path)
-                    if track.sync_state == SyncState.NONE:
-                        track.matched_lyrics = None
-                        item.setText(3, SyncState.NONE.name)
-                        item.setText(4, "Lyrics Deleted")
-                    else:
-                        track.matched_lyrics = read_track_lyrics(track.file_path)
-                        item.setText(3, track.sync_state.name)
-                        item.setText(4, "Ready")
-                    self._apply_item_styling(item, track)
-
-                if self._current_active_item in selected_items:
-                    act_track: Optional[TrackItem] = self._current_active_item.data(0, Qt.ItemDataRole.UserRole)
-                    lyrics = act_track.matched_lyrics if act_track else None
-                    dur = act_track.duration_ms if act_track else 0
-                    self.preview_widget.set_lyrics(lyrics, dur)
-                    self.editor_widget.set_lyrics(lyrics)
-
-                self.statusBar().showMessage(f"Stripped selected lyrics from {count} file(s).")
-                self._apply_missing_filter()
+                self._execute_lyrics_deletion(
+                    selected_items,
+                    del_emb=dlg.delete_embedded,
+                    del_lrc=dlg.delete_lrc,
+                    del_elrc=dlg.delete_elrc,
+                    del_ttml=dlg.delete_ttml,
+                )
 
         elif action == action_manual:
             target_item = selected_items[0]
