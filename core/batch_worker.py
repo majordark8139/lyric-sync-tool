@@ -1,15 +1,22 @@
 """Background worker threads for directory scanning and batch tagging."""
 
+import gc
 import os
 import pathlib
-from typing import Any, List, Optional
+import queue
+import threading
+import time
+from typing import Any, List, Optional, Union
 
 import mutagen
 from PySide6.QtCore import QThread, Signal
 
 from core.models import SyncState, TaggingConfig, TrackItem
+from core.providers.auto import AutoLyricsProvider
 from core.providers.base import BaseLyricsProvider
 from core.providers.kugou import KugouProvider
+from core.providers.lrc_red import LrcRedProvider
+from core.providers.unison import UnisonProvider
 from core.tagger import apply_lyrics, detect_sync_state
 
 _AUDIO_EXTENSIONS = {".flac", ".mp3", ".m4a", ".ogg"}
@@ -95,6 +102,8 @@ class ScannerWorker(QThread):
                 if audio and hasattr(audio, "info") and hasattr(audio.info, "length"):
                     duration_ms = int(audio.info.length * 1000)
 
+                del audio
+
                 sync_state = detect_sync_state(full_path)
 
                 item = TrackItem(
@@ -110,7 +119,10 @@ class ScannerWorker(QThread):
 
                 count += 1
                 self.track_found.emit(item)
+                if count % 50 == 0:
+                    gc.collect()
 
+        gc.collect()
         self.finished_scanning.emit(count)
 
 
@@ -125,71 +137,156 @@ class BatchTaggerWorker(QThread):
         self,
         tracks: List[TrackItem],
         config: TaggingConfig,
-        provider: Optional[BaseLyricsProvider] = None,
+        provider: Union[BaseLyricsProvider, str, None] = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._tracks = tracks
         self._config = config
-        self._provider = provider or KugouProvider()
         self._is_cancelled: bool = False
+
+        if provider is None or provider == "Auto" or (isinstance(provider, str) and provider.lower() == "auto"):
+            self._provider = AutoLyricsProvider()
+            self._is_auto = True
+        elif isinstance(provider, AutoLyricsProvider):
+            self._provider = provider
+            self._is_auto = True
+        elif isinstance(provider, str):
+            if provider.lower() in ("unison",):
+                self._provider = UnisonProvider()
+            elif provider.lower() in ("lrc.red", "lrcred"):
+                self._provider = LrcRedProvider()
+            else:
+                self._provider = KugouProvider()
+            self._is_auto = False
+        else:
+            self._provider = provider
+            self._is_auto = (getattr(provider, "name", "").lower() == "auto")
 
     def cancel(self) -> None:
         """Cancel ongoing batch tagging."""
         self._is_cancelled = True
         self.requestInterruption()
 
-    def run(self) -> None:
-        total = len(self._tracks)
+    def _process_single_track(self, idx: int, track: TrackItem) -> None:
+        if self.isInterruptionRequested() or self._is_cancelled:
+            return
 
-        for idx, track in enumerate(self._tracks):
-            if self.isInterruptionRequested() or self._is_cancelled:
-                break
+        # Skip if already word synced and overwrite is disabled
+        if not self._config.overwrite_existing_word_sync and track.sync_state == SyncState.WORD:
+            self.track_progress.emit(idx, "Skipped (Existing Word Sync)", track)
+            return
 
-            self.track_progress.emit(idx, "Searching...", track)
+        lyrics = None
+        try:
+            if self._is_auto:
+                unison = getattr(self._provider, "unison", None) or UnisonProvider()
+                lrc_red = getattr(self._provider, "lrc_red", None) or LrcRedProvider()
+                kugou = getattr(self._provider, "kugou", None) or KugouProvider()
 
-            # Skip if already word synced and overwrite is disabled
-            if not self._config.overwrite_existing_word_sync and track.sync_state == SyncState.WORD:
-                self.track_progress.emit(idx, "Skipped (Existing Word Sync)", track)
-                self.overall_progress.emit(idx + 1, total)
-                if idx < total - 1 and not (self.isInterruptionRequested() or self._is_cancelled):
-                    self.msleep(180)
-                continue
+                # Stage 1: Unison
+                self.track_progress.emit(idx, "Searching (Unison)...", track)
+                lyrics = unison.search_word_sync(
+                    title=track.title,
+                    artist=track.artist,
+                    duration_ms=track.duration_ms,
+                    config=self._config,
+                )
 
-            try:
+                # Stage 2: lrc.red
+                if not lyrics and not self.isInterruptionRequested() and not self._is_cancelled:
+                    self.track_progress.emit(idx, "Searching (lrc.red)...", track)
+                    lyrics = lrc_red.search_word_sync(
+                        title=track.title,
+                        artist=track.artist,
+                        duration_ms=track.duration_ms,
+                        config=self._config,
+                    )
+
+                # Stage 3: Kugou
+                if not lyrics and not self.isInterruptionRequested() and not self._is_cancelled:
+                    self.track_progress.emit(idx, "Searching (Kugou)...", track)
+                    lyrics = kugou.search_word_sync(
+                        title=track.title,
+                        artist=track.artist,
+                        duration_ms=track.duration_ms,
+                        config=self._config,
+                    )
+            else:
+                p_name = getattr(self._provider, "name", "Provider")
+                self.track_progress.emit(idx, f"Searching ({p_name})...", track)
                 lyrics = self._provider.search_word_sync(
                     title=track.title,
                     artist=track.artist,
                     duration_ms=track.duration_ms,
                     config=self._config,
                 )
-            except Exception as e:
-                self.track_progress.emit(idx, f"Error: {e}", track)
-                self.overall_progress.emit(idx + 1, total)
-                if idx < total - 1 and not (self.isInterruptionRequested() or self._is_cancelled):
-                    self.msleep(180)
-                continue
+        except Exception as e:
+            self.track_progress.emit(idx, f"Error: {e}", track)
+            return
 
-            if lyrics and lyrics.lines:
-                try:
-                    self.track_progress.emit(idx, "Applying tags...", track)
-                    apply_lyrics(track.file_path, lyrics, config=self._config)
-                    actual_type = "WORD" if lyrics.is_word_synced else "LINE"
-                    track.sync_state = actual_type
-                    track.status = f"Tagged ({actual_type})"
-                    track.matched_lyrics = lyrics
-                    self.track_progress.emit(idx, track.status, track)
-                except Exception as e:
-                    track.status = f"Apply Error: {e}"
-                    self.track_progress.emit(idx, track.status, track)
-            else:
-                track.status = "No Word Sync Available"
+        if self.isInterruptionRequested() or self._is_cancelled:
+            return
+
+        if lyrics and lyrics.lines:
+            try:
+                self.track_progress.emit(idx, "Applying tags...", track)
+                apply_lyrics(track.file_path, lyrics, config=self._config)
+                actual_type = "WORD" if lyrics.is_word_synced else "LINE"
+                track.sync_state = actual_type
+                track.status = f"Tagged ({actual_type})"
+                track.matched_lyrics = lyrics
                 self.track_progress.emit(idx, track.status, track)
+            except Exception as e:
+                track.status = f"Apply Error: {e}"
+                self.track_progress.emit(idx, track.status, track)
+        else:
+            track.status = "No Word Sync Available"
+            self.track_progress.emit(idx, track.status, track)
 
-            self.overall_progress.emit(idx + 1, total)
+    def run(self) -> None:
+        total = len(self._tracks)
+        if total == 0:
+            self.overall_progress.emit(0, 0)
+            self.batch_finished.emit()
+            return
 
-            # Cooperative pause between tracks to prevent socket saturation and write stutter
-            if idx < total - 1 and not (self.isInterruptionRequested() or self._is_cancelled):
-                self.msleep(180)
+        # Keep worker concurrency bounded to maximum 3 threads for dual-core / low RAM smoothness
+        max_workers = min(3, total)
 
+        task_queue: queue.Queue = queue.Queue()
+        for idx, track in enumerate(self._tracks):
+            task_queue.put((idx, track))
+
+        done_count = 0
+        done_lock = threading.Lock()
+
+        def worker_loop() -> None:
+            nonlocal done_count
+            while not self.isInterruptionRequested() and not self._is_cancelled:
+                try:
+                    idx, track = task_queue.get(timeout=0.05)
+                except queue.Empty:
+                    break
+
+                self._process_single_track(idx, track)
+
+                with done_lock:
+                    done_count += 1
+                    curr_done = done_count
+                    self.overall_progress.emit(curr_done, total)
+                    # Low RAM safety: Periodic garbage collection every 50 tracks
+                    if curr_done % 50 == 0:
+                        gc.collect()
+
+                task_queue.task_done()
+                time.sleep(0.02)
+
+        threads = [threading.Thread(target=worker_loop, daemon=True) for _ in range(max_workers)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        gc.collect()
         self.batch_finished.emit()

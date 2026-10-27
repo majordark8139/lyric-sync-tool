@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTextEdit,
     QToolBar,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -42,6 +43,7 @@ from PySide6.QtWidgets import (
 from core.batch_worker import BatchTaggerWorker, ScannerWorker, _extract_tag_string
 from core.config import SettingsManager
 from core.models import LyricLine, SongLyrics, SyllableSpan, SyncState, TaggingConfig, TrackItem
+from core.providers.auto import AutoLyricsProvider
 from core.providers.kugou import KugouProvider
 from core.providers.lrc_red import LrcRedProvider
 from core.providers.unison import UnisonProvider
@@ -214,7 +216,7 @@ class MainWindow(QMainWindow):
         self._init_ui()
 
         # Restore active provider
-        saved_provider = getattr(self.current_settings, "active_provider", "Kugou")
+        saved_provider = getattr(self.current_settings, "active_provider", "Auto")
         p_idx = self.cmb_provider.findText(saved_provider)
         if p_idx >= 0:
             self.cmb_provider.setCurrentIndex(p_idx)
@@ -257,9 +259,39 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
 
         self.cmb_provider = QComboBox()
-        self.cmb_provider.addItems(["Kugou", "lrc.red", "Unison"])
+        self.cmb_provider.addItems(["Auto", "Unison", "lrc.red", "Kugou"])
         self.cmb_provider.currentTextChanged.connect(self._on_provider_changed)
         toolbar.addWidget(self.cmb_provider)
+
+        self.provider_info_btn = QToolButton()
+        self.provider_info_btn.setText("ⓘ")
+        self.provider_info_btn.setToolTip(
+            "Auto Mode (Cascading Pipeline):\n"
+            "Searches Unison first for high-fidelity Apple Music word sync.\n"
+            "Tracks missing word sync immediately stream to lrc.red in parallel.\n"
+            "Any remaining misses fall back to Kugou KRC syllable sync.\n"
+            "Ensures maximum library coverage at peak tagging speed."
+        )
+        self.provider_info_btn.setStyleSheet("""
+            QToolButton {
+                border: 1px solid #555;
+                border-radius: 9px;
+                min-width: 18px;
+                max-width: 18px;
+                min-height: 18px;
+                max-height: 18px;
+                font-size: 11px;
+                font-weight: bold;
+                color: #aaa;
+                background: transparent;
+            }
+            QToolButton:hover {
+                border-color: #3b82f6;
+                color: #3b82f6;
+                background: rgba(59, 130, 246, 0.1);
+            }
+        """)
+        toolbar.addWidget(self.provider_info_btn)
 
         toolbar.addSeparator()
 
@@ -299,11 +331,14 @@ class MainWindow(QMainWindow):
         self.tree = QTreeWidget()
         self.tree.setColumnCount(5)
         self.tree.setHeaderLabels(["Title", "Artist", "Duration", "Sync State", "Status"])
-        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
-        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.header().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header = self.tree.header()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
+        self.tree.setColumnWidth(0, 220)
+        self.tree.setColumnWidth(1, 140)
+        self.tree.setColumnWidth(2, 75)
+        self.tree.setColumnWidth(3, 90)
+        self.tree.setColumnWidth(4, 160)
 
         self.tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -745,7 +780,9 @@ class MainWindow(QMainWindow):
 
     def _get_active_provider(self):
         text = self.cmb_provider.currentText()
-        if text == "lrc.red":
+        if text == "Auto":
+            return AutoLyricsProvider()
+        elif text == "lrc.red":
             return LrcRedProvider()
         elif text == "Unison":
             return UnisonProvider()

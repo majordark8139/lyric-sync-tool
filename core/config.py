@@ -13,7 +13,7 @@ class Settings(TaggingConfig):
     """Application-wide settings extending TaggingConfig with UI preferences."""
 
     theme: str = "Dark"
-    active_provider: str = "Kugou"
+    active_provider: str = "Auto"
 
     @property
     def purge_stale(self) -> bool:
@@ -107,7 +107,7 @@ class SettingsManager:
         m4a_embed_atom = _get_bool(self._qsettings, "m4a_embed_atom", True)
 
         theme = _get_str(self._qsettings, "theme", "Dark")
-        active_provider = _get_str(self._qsettings, "active_provider", "Kugou")
+        active_provider = _get_str(self._qsettings, "active_provider", "Auto")
 
         return Settings(
             write_lrc=write_lrc,
@@ -164,7 +164,7 @@ class SettingsManager:
         theme_val = getattr(settings, "theme", "Dark")
         self._qsettings.setValue("theme", theme_val)
 
-        provider_val = getattr(settings, "active_provider", "Kugou")
+        provider_val = getattr(settings, "active_provider", "Auto")
         self._qsettings.setValue("active_provider", provider_val)
 
         self._qsettings.sync()

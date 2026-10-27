@@ -3,11 +3,15 @@
 import os
 import pathlib
 import re
+import threading
 from typing import Any, Dict, List, Optional
 
 import mutagen
 from mutagen._vorbis import VCommentDict
 from mutagen.flac import FLAC
+
+# I/O serialization lock to prevent random HDD head thrashing during parallel processing
+DISK_IO_LOCK = threading.Lock()
 from mutagen.id3 import ID3, ID3FileType, SYLT, TXXX, USLT
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4
@@ -741,157 +745,162 @@ def apply_lyrics(
         results["reason"] = "existing_word_sync"
         return results
 
-    # ── 1. Write Sidecars ──────────────────────────────────────────────────
-    written_sidecars: List[pathlib.Path] = []
-    enhanced_lrc = to_enhanced_lrc(lyrics)
-    ttml_content = to_ttml(lyrics)
-    plain_text = to_plain_text(lyrics)
+    with DISK_IO_LOCK:
+        # ── 1. Write Sidecars ──────────────────────────────────────────────────
+        written_sidecars: List[pathlib.Path] = []
+        enhanced_lrc = to_enhanced_lrc(lyrics)
+        ttml_content = to_ttml(lyrics)
+        plain_text = to_plain_text(lyrics)
 
-    if config.write_lrc:
-        ext_mode = config.lrc_extension.lower()
-        if ext_mode in ("lrc", "both"):
-            p_lrc = path.with_suffix(".lrc")
-            _atomic_write_text(p_lrc, enhanced_lrc)
-            written_sidecars.append(p_lrc)
-        if ext_mode in ("elrc", "both"):
-            p_elrc = path.with_suffix(".elrc")
-            _atomic_write_text(p_elrc, enhanced_lrc)
-            written_sidecars.append(p_elrc)
+        if config.write_lrc:
+            ext_mode = config.lrc_extension.lower()
+            if ext_mode in ("lrc", "both"):
+                p_lrc = path.with_suffix(".lrc")
+                _atomic_write_text(p_lrc, enhanced_lrc)
+                written_sidecars.append(p_lrc)
+            if ext_mode in ("elrc", "both"):
+                p_elrc = path.with_suffix(".elrc")
+                _atomic_write_text(p_elrc, enhanced_lrc)
+                written_sidecars.append(p_elrc)
 
-    if config.write_ttml:
-        p_ttml = path.with_suffix(".ttml")
-        _atomic_write_text(p_ttml, ttml_content)
-        written_sidecars.append(p_ttml)
+        if config.write_ttml:
+            p_ttml = path.with_suffix(".ttml")
+            _atomic_write_text(p_ttml, ttml_content)
+            written_sidecars.append(p_ttml)
 
-    results["sidecars_written"] = [str(p) for p in written_sidecars]
+        results["sidecars_written"] = [str(p) for p in written_sidecars]
 
-    # ── Consolidation Pass ────────────────────────────────────────────────
-    # If writing standard .lrc only, purge lingering .elrc
-    if config.write_lrc and config.lrc_extension.lower() == "lrc":
-        lingering_elrc = path.with_suffix(".elrc")
-        if lingering_elrc.is_file() and lingering_elrc not in written_sidecars:
-            if config.backup_stale_sidecars:
-                bak_path = lingering_elrc.with_name(lingering_elrc.name + ".bak")
-                lingering_elrc.replace(bak_path)
-                results["sidecars_purged"].append(str(bak_path))
-            else:
-                lingering_elrc.unlink()
-                results["sidecars_purged"].append(str(lingering_elrc))
-
-    # ── 2. Stale Purge Pass ───────────────────────────────────────────────
-    if config.purge_stale_line_sync:
-        candidate_siblings = [
-            path.with_suffix(".lrc"),
-            path.with_suffix(".elrc"),
-            path.with_suffix(".ttml"),
-        ]
-        for sibling in candidate_siblings:
-            if sibling.is_file() and sibling not in written_sidecars:
-                should_purge = False
-
-                # If TTML writing is disabled, purge lingering TTML
-                if sibling.suffix.lower() == ".ttml" and not config.write_ttml:
-                    should_purge = True
+        # ── Consolidation Pass ────────────────────────────────────────────────
+        # If writing standard .lrc only, purge lingering .elrc
+        if config.write_lrc and config.lrc_extension.lower() == "lrc":
+            lingering_elrc = path.with_suffix(".elrc")
+            if lingering_elrc.is_file() and lingering_elrc not in written_sidecars:
+                if config.backup_stale_sidecars:
+                    bak_path = lingering_elrc.with_name(lingering_elrc.name + ".bak")
+                    lingering_elrc.replace(bak_path)
+                    results["sidecars_purged"].append(str(bak_path))
                 else:
-                    try:
-                        content = sibling.read_text(encoding="utf-8", errors="replace")
-                    except Exception:
-                        content = ""
+                    lingering_elrc.unlink()
+                    results["sidecars_purged"].append(str(lingering_elrc))
 
-                    # Check if sibling lacks word sync
-                    has_word_sync = bool(_WORD_TAG_RE.search(content) or _TTML_WORD_RE.search(content))
-                    if not has_word_sync:
+        # ── 2. Stale Purge Pass ───────────────────────────────────────────────
+        if config.purge_stale_line_sync:
+            candidate_siblings = [
+                path.with_suffix(".lrc"),
+                path.with_suffix(".elrc"),
+                path.with_suffix(".ttml"),
+            ]
+            for sibling in candidate_siblings:
+                if sibling.is_file() and sibling not in written_sidecars:
+                    should_purge = False
+
+                    # If TTML writing is disabled, purge lingering TTML
+                    if sibling.suffix.lower() == ".ttml" and not config.write_ttml:
                         should_purge = True
-
-                if should_purge:
-                    if config.backup_stale_sidecars:
-                        bak_path = sibling.with_name(sibling.name + ".bak")
-                        sibling.replace(bak_path)
-                        results["sidecars_purged"].append(str(bak_path))
                     else:
-                        sibling.unlink()
-                        results["sidecars_purged"].append(str(sibling))
+                        try:
+                            content = sibling.read_text(encoding="utf-8", errors="replace")
+                        except Exception:
+                            content = ""
 
-    # ── 3. Embed into audio file tags ─────────────────────────────────────
-    if config.embed_metadata:
-        if not path.is_file():
-            raise FileNotFoundError(f"Audio file not found: {file_path}")
+                        # Check if sibling lacks word sync
+                        has_word_sync = bool(_WORD_TAG_RE.search(content) or _TTML_WORD_RE.search(content))
+                        if not has_word_sync:
+                            should_purge = True
 
-        audio = mutagen.File(file_path, easy=False)
-        if audio is None:
-            raise ValueError(f"Cannot embed lyrics: unsupported audio file format: {file_path}")
+                    if should_purge:
+                        if config.backup_stale_sidecars:
+                            bak_path = sibling.with_name(sibling.name + ".bak")
+                            sibling.replace(bak_path)
+                            results["sidecars_purged"].append(str(bak_path))
+                        else:
+                            sibling.unlink()
+                            results["sidecars_purged"].append(str(sibling))
 
-        # Vorbis comments: FLAC, OGG, Opus
-        if isinstance(audio, (FLAC, OggVorbis, OggOpus, OggFLAC)) or (
-            hasattr(audio, "tags") and isinstance(audio.tags, VCommentDict)
-        ):
-            if config.flac_embed_vorbis:
-                if audio.tags is None:
-                    audio.add_tags()
-                audio["LYRICS"] = [enhanced_lrc]
-                audio.save()
-                results["embedded"] = True
+        # ── 3. Embed into audio file tags ─────────────────────────────────────
+        if config.embed_metadata:
+            if not path.is_file():
+                raise FileNotFoundError(f"Audio file not found: {file_path}")
 
-        # ID3 frames: MP3, etc.
-        elif isinstance(audio, (MP3, ID3FileType)) or (
-            hasattr(audio, "tags") and isinstance(audio.tags, ID3)
-        ) or file_path.lower().endswith(".mp3"):
-            if audio.tags is None:
-                audio.add_tags()
-            if config.mp3_embed_uslt_fallback:
-                audio.tags.delall("USLT")
-                audio.tags.add(USLT(encoding=3, lang="eng", desc="", text=plain_text))
-            if config.mp3_embed_txxx:
-                audio.tags.delall("TXXX:LYRICS")
-                audio.tags.add(TXXX(encoding=3, desc="LYRICS", text=enhanced_lrc))
-            if config.mp3_embed_sylt:
-                sylt_entries = []
-                for line in lyrics.lines:
-                    for syl in line.syllables:
-                        sylt_entries.append((syl.text, syl.abs_start_ms))
-                if sylt_entries:
-                    audio.tags.delall("SYLT")
-                    audio.tags.add(SYLT(encoding=3, lang="eng", format=2, type=1, desc="", text=sylt_entries))
-            audio.save(v2_version=3)
-            results["embedded"] = True
+            audio = mutagen.File(file_path, easy=False)
+            try:
+                if audio is None:
+                    raise ValueError(f"Cannot embed lyrics: unsupported audio file format: {file_path}")
 
-        # MP4/M4A atoms
-        elif isinstance(audio, MP4) or file_path.lower().endswith((".m4a", ".mp4")):
-            if config.m4a_embed_atom:
-                if audio.tags is None:
-                    audio.add_tags()
-                audio["\xa9lyr"] = [enhanced_lrc]
-                audio.save()
-                results["embedded"] = True
+                # Vorbis comments: FLAC, OGG, Opus
+                if isinstance(audio, (FLAC, OggVorbis, OggOpus, OggFLAC)) or (
+                    hasattr(audio, "tags") and isinstance(audio.tags, VCommentDict)
+                ):
+                    if config.flac_embed_vorbis:
+                        if audio.tags is None:
+                            audio.add_tags()
+                        audio["LYRICS"] = [enhanced_lrc]
+                        audio.save()
+                        results["embedded"] = True
 
-        else:
-            # Generic fallback
-            if audio.tags is None:
-                try:
-                    audio.add_tags()
-                except Exception:
-                    pass
-            if hasattr(audio, "tags") and isinstance(audio.tags, ID3):
-                if config.mp3_embed_uslt_fallback:
-                    audio.tags.delall("USLT")
-                    audio.tags.add(USLT(encoding=3, lang="eng", desc="", text=plain_text))
-                if config.mp3_embed_txxx:
-                    audio.tags.delall("TXXX:LYRICS")
-                    audio.tags.add(TXXX(encoding=3, desc="LYRICS", text=enhanced_lrc))
-                try:
+                # ID3 frames: MP3, etc.
+                elif isinstance(audio, (MP3, ID3FileType)) or (
+                    hasattr(audio, "tags") and isinstance(audio.tags, ID3)
+                ) or file_path.lower().endswith(".mp3"):
+                    if audio.tags is None:
+                        audio.add_tags()
+                    if config.mp3_embed_uslt_fallback:
+                        audio.tags.delall("USLT")
+                        audio.tags.add(USLT(encoding=3, lang="eng", desc="", text=plain_text))
+                    if config.mp3_embed_txxx:
+                        audio.tags.delall("TXXX:LYRICS")
+                        audio.tags.add(TXXX(encoding=3, desc="LYRICS", text=enhanced_lrc))
+                    if config.mp3_embed_sylt:
+                        sylt_entries = []
+                        for line in lyrics.lines:
+                            for syl in line.syllables:
+                                sylt_entries.append((syl.text, syl.abs_start_ms))
+                        if sylt_entries:
+                            audio.tags.delall("SYLT")
+                            audio.tags.add(SYLT(encoding=3, lang="eng", format=2, type=1, desc="", text=sylt_entries))
                     audio.save(v2_version=3)
-                except TypeError:
-                    audio.save()
-                results["embedded"] = True
-            else:
-                try:
-                    audio["LYRICS"] = [enhanced_lrc]
-                    audio.save()
                     results["embedded"] = True
-                except Exception:
-                    pass
+
+                # MP4/M4A atoms
+                elif isinstance(audio, MP4) or file_path.lower().endswith((".m4a", ".mp4")):
+                    if config.m4a_embed_atom:
+                        if audio.tags is None:
+                            audio.add_tags()
+                        audio["\xa9lyr"] = [enhanced_lrc]
+                        audio.save()
+                        results["embedded"] = True
+
+                else:
+                    # Generic fallback
+                    if audio.tags is None:
+                        try:
+                            audio.add_tags()
+                        except Exception:
+                            pass
+                    if hasattr(audio, "tags") and isinstance(audio.tags, ID3):
+                        if config.mp3_embed_uslt_fallback:
+                            audio.tags.delall("USLT")
+                            audio.tags.add(USLT(encoding=3, lang="eng", desc="", text=plain_text))
+                        if config.mp3_embed_txxx:
+                            audio.tags.delall("TXXX:LYRICS")
+                            audio.tags.add(TXXX(encoding=3, desc="LYRICS", text=enhanced_lrc))
+                        try:
+                            audio.save(v2_version=3)
+                        except TypeError:
+                            audio.save()
+                        results["embedded"] = True
+                    else:
+                        try:
+                            audio["LYRICS"] = [enhanced_lrc]
+                            audio.save()
+                            results["embedded"] = True
+                        except Exception:
+                            pass
+            finally:
+                del audio
 
     return results
+
 
 
 def strip_lyrics(file_path: str) -> None:
@@ -900,95 +909,99 @@ def strip_lyrics(file_path: str) -> None:
     Args:
         file_path: Path to the target audio file.
     """
-    path = pathlib.Path(file_path)
+    with DISK_IO_LOCK:
+        path = pathlib.Path(file_path)
 
-    # ── 1. Remove sidecars ─────────────────────────────────────────────────
-    for ext in (".lrc", ".elrc", ".ttml"):
-        sidecar = path.with_suffix(ext)
-        if sidecar.is_file():
-            try:
-                os.unlink(str(sidecar))
-            except OSError:
-                pass
-
-    # ── 2. Remove embedded tags ───────────────────────────────────────────
-    if not path.is_file():
-        return
-
-    try:
-        audio = mutagen.File(file_path, easy=False)
-    except Exception:
-        audio = None
-
-    if audio is None:
-        return
-
-    # FLAC / OGG / Vorbis comments
-    if isinstance(audio, (FLAC, OggVorbis, OggOpus, OggFLAC)) or (
-        hasattr(audio, "tags") and isinstance(audio.tags, VCommentDict)
-    ):
-        modified = False
-        for key in ("LYRICS", "lyrics", "UNSYNCEDLYRICS", "unsyncedlyrics"):
-            if key in audio:
-                del audio[key]
-                modified = True
-            elif audio.tags is not None and key in audio.tags:
-                del audio.tags[key]
-                modified = True
-        if modified:
-            audio.save()
-
-    # MP3 / ID3
-    elif isinstance(audio, (MP3, ID3FileType)) or (
-        hasattr(audio, "tags") and isinstance(audio.tags, ID3)
-    ) or file_path.lower().endswith(".mp3"):
-        if audio.tags is not None:
-            audio.tags.delall("USLT")
-            audio.tags.delall("TXXX:LYRICS")
-            audio.tags.delall("SYLT")
-            audio.save(v2_version=3)
-
-    # MP4 / M4A
-    elif isinstance(audio, MP4) or file_path.lower().endswith((".m4a", ".mp4")):
-        modified = False
-        if hasattr(audio, "pop"):
-            if "\xa9lyr" in audio:
-                audio.pop("\xa9lyr", None)
-                modified = True
-            if "©lyr" in audio:
-                audio.pop("©lyr", None)
-                modified = True
-        if audio.tags is not None and hasattr(audio.tags, "pop"):
-            if "\xa9lyr" in audio.tags:
-                audio.tags.pop("\xa9lyr", None)
-                modified = True
-            if "©lyr" in audio.tags:
-                audio.tags.pop("©lyr", None)
-                modified = True
-        if modified:
-            audio.save()
-
-    else:
-        # Fallback for generic ID3 / dictionary tags
-        if hasattr(audio, "tags") and isinstance(audio.tags, ID3):
-            audio.tags.delall("USLT")
-            audio.tags.delall("TXXX:LYRICS")
-            audio.tags.delall("SYLT")
-            try:
-                audio.save(v2_version=3)
-            except TypeError:
-                audio.save()
-        elif hasattr(audio, "__delitem__"):
-            modified = False
-            for key in ("LYRICS", "lyrics", "UNSYNCEDLYRICS", "unsyncedlyrics"):
+        # ── 1. Remove sidecars ─────────────────────────────────────────────────
+        for ext in (".lrc", ".elrc", ".ttml"):
+            sidecar = path.with_suffix(ext)
+            if sidecar.is_file():
                 try:
-                    del audio[key]
-                    modified = True
-                except Exception:
+                    os.unlink(str(sidecar))
+                except OSError:
                     pass
-            if modified:
-                try:
+
+        # ── 2. Remove embedded tags ───────────────────────────────────────────
+        if not path.is_file():
+            return
+
+        try:
+            audio = mutagen.File(file_path, easy=False)
+        except Exception:
+            audio = None
+
+        if audio is None:
+            return
+
+        try:
+            # FLAC / OGG / Vorbis comments
+            if isinstance(audio, (FLAC, OggVorbis, OggOpus, OggFLAC)) or (
+                hasattr(audio, "tags") and isinstance(audio.tags, VCommentDict)
+            ):
+                modified = False
+                for key in ("LYRICS", "lyrics", "UNSYNCEDLYRICS", "unsyncedlyrics"):
+                    if key in audio:
+                        del audio[key]
+                        modified = True
+                    elif audio.tags is not None and key in audio.tags:
+                        del audio.tags[key]
+                        modified = True
+                if modified:
                     audio.save()
-                except Exception:
-                    pass
+
+            # MP3 / ID3
+            elif isinstance(audio, (MP3, ID3FileType)) or (
+                hasattr(audio, "tags") and isinstance(audio.tags, ID3)
+            ) or file_path.lower().endswith(".mp3"):
+                if audio.tags is not None:
+                    audio.tags.delall("USLT")
+                    audio.tags.delall("TXXX:LYRICS")
+                    audio.tags.delall("SYLT")
+                    audio.save(v2_version=3)
+
+            # MP4 / M4A
+            elif isinstance(audio, MP4) or file_path.lower().endswith((".m4a", ".mp4")):
+                modified = False
+                if hasattr(audio, "pop"):
+                    if "\xa9lyr" in audio:
+                        audio.pop("\xa9lyr", None)
+                        modified = True
+                    if "©lyr" in audio:
+                        audio.pop("©lyr", None)
+                        modified = True
+                if audio.tags is not None and hasattr(audio.tags, "pop"):
+                    if "\xa9lyr" in audio.tags:
+                        audio.tags.pop("\xa9lyr", None)
+                        modified = True
+                    if "©lyr" in audio.tags:
+                        audio.tags.pop("©lyr", None)
+                        modified = True
+                if modified:
+                    audio.save()
+
+            else:
+                # Fallback for generic ID3 / dictionary tags
+                if hasattr(audio, "tags") and isinstance(audio.tags, ID3):
+                    audio.tags.delall("USLT")
+                    audio.tags.delall("TXXX:LYRICS")
+                    audio.tags.delall("SYLT")
+                    try:
+                        audio.save(v2_version=3)
+                    except TypeError:
+                        audio.save()
+                elif hasattr(audio, "__delitem__"):
+                    modified = False
+                    for key in ("LYRICS", "lyrics", "UNSYNCEDLYRICS", "unsyncedlyrics"):
+                        try:
+                            del audio[key]
+                            modified = True
+                        except Exception:
+                            pass
+                    if modified:
+                        try:
+                            audio.save()
+                        except Exception:
+                            pass
+        finally:
+            del audio
 
