@@ -440,6 +440,7 @@ class TestSettingsManager(unittest.TestCase):
         settings.create_backup = True
         settings.force_overwrite = True
         settings.theme = "OLED Dark"
+        settings.column_widths = [310, 160, 85, 105, 190]
 
         sm.save_settings(settings)
         reloaded = sm.load_settings()
@@ -450,6 +451,7 @@ class TestSettingsManager(unittest.TestCase):
         self.assertTrue(reloaded.create_backup)
         self.assertTrue(reloaded.force_overwrite)
         self.assertEqual(reloaded.theme, "OLED Dark")
+        self.assertEqual(reloaded.column_widths, [310, 160, 85, 105, 190])
 
 
 class TestMultiProviders(unittest.TestCase):

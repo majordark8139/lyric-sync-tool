@@ -344,4 +344,5 @@ class TaggingConfig:
     overwrite_existing_word_sync: bool = False
     duration_tolerance_ms: int = 2500
     smart_fallback: bool = True  # Enables cascading ladder if raw query yields no word-synced result
+    column_widths: List[int] = field(default_factory=lambda: [220, 140, 75, 90, 160])
 

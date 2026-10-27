@@ -1,7 +1,9 @@
 """Persistent configuration management backed by QSettings."""
 
-from dataclasses import dataclass
-from typing import Any, Union
+import json
+from dataclasses import asdict, dataclass, field, is_dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 from PySide6.QtCore import QSettings
 
@@ -14,6 +16,7 @@ class Settings(TaggingConfig):
 
     theme: str = "Dark"
     active_provider: str = "Auto"
+    column_widths: List[int] = field(default_factory=lambda: [220, 140, 75, 90, 160])
 
     @property
     def purge_stale(self) -> bool:
@@ -64,6 +67,37 @@ def _get_str(qsettings: QSettings, key: str, default: str) -> str:
     return str(val) if val is not None else default
 
 
+def _get_column_widths(qsettings: QSettings, key: str, default: List[int]) -> List[int]:
+    val = qsettings.value(key, None)
+    if val is None:
+        return list(default)
+    if isinstance(val, (list, tuple)):
+        try:
+            res = [int(x) for x in val]
+            if len(res) == len(default):
+                return res
+        except (ValueError, TypeError):
+            pass
+    elif isinstance(val, str):
+        val_str = val.strip()
+        if val_str.startswith("[") and val_str.endswith("]"):
+            try:
+                parsed = json.loads(val_str)
+                if isinstance(parsed, list):
+                    res = [int(x) for x in parsed]
+                    if len(res) == len(default):
+                        return res
+            except Exception:
+                pass
+        try:
+            parts = [int(x.strip()) for x in val_str.split(",") if x.strip()]
+            if len(parts) == len(default):
+                return parts
+        except (ValueError, TypeError):
+            pass
+    return list(default)
+
+
 class SettingsManager:
     """Manages reading and writing application settings via QSettings."""
 
@@ -108,6 +142,7 @@ class SettingsManager:
 
         theme = _get_str(self._qsettings, "theme", "Dark")
         active_provider = _get_str(self._qsettings, "active_provider", "Auto")
+        column_widths = _get_column_widths(self._qsettings, "column_widths", [220, 140, 75, 90, 160])
 
         return Settings(
             write_lrc=write_lrc,
@@ -126,6 +161,7 @@ class SettingsManager:
             m4a_embed_atom=m4a_embed_atom,
             theme=theme,
             active_provider=active_provider,
+            column_widths=column_widths,
         )
 
     def load_settings(self) -> Settings:
@@ -167,8 +203,51 @@ class SettingsManager:
         provider_val = getattr(settings, "active_provider", "Auto")
         self._qsettings.setValue("active_provider", provider_val)
 
+        widths = getattr(settings, "column_widths", [220, 140, 75, 90, 160])
+        self._qsettings.setValue("column_widths", widths)
+
         self._qsettings.sync()
 
     def save_settings(self, settings: Union[Settings, TaggingConfig]) -> None:
         """Alias for save()."""
         self.save(settings)
+
+
+Config = Settings
+
+
+def load_config(path: Optional[Union[str, Path]] = None) -> Settings:
+    """Load settings from a JSON file path or system QSettings."""
+    if path is not None:
+        file_path = Path(path)
+        if file_path.exists():
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if "purge_stale" in data and "purge_stale_line_sync" not in data:
+                data["purge_stale_line_sync"] = data["purge_stale"]
+            if "create_backup" in data and "backup_stale_sidecars" not in data:
+                data["backup_stale_sidecars"] = data["create_backup"]
+            if "force_overwrite" in data and "overwrite_existing_word_sync" not in data:
+                data["overwrite_existing_word_sync"] = data["force_overwrite"]
+            valid_fields = Settings.__dataclass_fields__.keys()
+            filtered = {k: v for k, v in data.items() if k in valid_fields}
+            return Settings(**filtered)
+        return Settings()
+    return SettingsManager().load()
+
+
+def save_config(config: Union[Settings, TaggingConfig], path: Optional[Union[str, Path]] = None) -> None:
+    """Save settings to a JSON file path or system QSettings."""
+    if path is not None:
+        file_path = Path(path)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        if is_dataclass(config):
+            data = asdict(config)
+        else:
+            valid_fields = Settings.__dataclass_fields__.keys()
+            data = {k: getattr(config, k) for k in valid_fields if hasattr(config, k)}
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    else:
+        SettingsManager().save(config)
+

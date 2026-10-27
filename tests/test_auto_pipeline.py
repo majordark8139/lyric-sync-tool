@@ -199,12 +199,26 @@ class TestGuiResizeAndInfoButton(unittest.TestCase):
         from PySide6.QtWidgets import QApplication
         cls.app = QApplication.instance() or QApplication([])
 
+    def setUp(self):
+        from PySide6.QtCore import QSettings
+        QSettings("lyric-sync-tool", "Config").clear()
+
+    def tearDown(self):
+        from PySide6.QtCore import QSettings
+        from PySide6.QtWidgets import QApplication
+        QSettings("lyric-sync-tool", "Config").clear()
+        if hasattr(self, "win") and self.win:
+            self.win.close()
+            self.win.deleteLater()
+            self.win = None
+            QApplication.processEvents()
+
     def test_tree_column_interactive_mode_and_widths(self) -> None:
         from PySide6.QtWidgets import QHeaderView
         from gui.app import MainWindow
 
-        win = MainWindow()
-        header = win.tree.header()
+        self.win = MainWindow()
+        header = self.win.tree.header()
 
         # Verify all sections are in Interactive resize mode
         for col_idx in range(5):
@@ -216,32 +230,59 @@ class TestGuiResizeAndInfoButton(unittest.TestCase):
             )
 
         # Verify default column widths
-        self.assertEqual(win.tree.columnWidth(0), 220)
-        self.assertEqual(win.tree.columnWidth(1), 140)
-        self.assertEqual(win.tree.columnWidth(2), 75)
-        self.assertEqual(win.tree.columnWidth(3), 90)
-        self.assertEqual(win.tree.columnWidth(4), 160)
+        self.assertEqual(self.win.tree.columnWidth(0), 220)
+        self.assertEqual(self.win.tree.columnWidth(1), 140)
+        self.assertEqual(self.win.tree.columnWidth(2), 75)
+        self.assertEqual(self.win.tree.columnWidth(3), 90)
+        self.assertEqual(self.win.tree.columnWidth(4), 160)
         self.assertTrue(header.stretchLastSection())
 
     def test_provider_dropdown_and_info_button(self) -> None:
         from gui.app import MainWindow
 
-        win = MainWindow()
+        self.win = MainWindow()
 
         # Verify 'Auto' is first item in provider dropdown
-        items = [win.cmb_provider.itemText(i) for i in range(win.cmb_provider.count())]
+        items = [self.win.cmb_provider.itemText(i) for i in range(self.win.cmb_provider.count())]
         self.assertEqual(items[0], "Auto")
         self.assertEqual(items, ["Auto", "Unison", "lrc.red", "Kugou"])
 
         # Verify info button exists and has correct styling and tooltip
-        self.assertIsNotNone(win.provider_info_btn)
-        self.assertEqual(win.provider_info_btn.text(), "ⓘ")
-        tooltip = win.provider_info_btn.toolTip()
+        self.assertIsNotNone(self.win.provider_info_btn)
+        self.assertEqual(self.win.provider_info_btn.text(), "ⓘ")
+        tooltip = self.win.provider_info_btn.toolTip()
         self.assertIn("Auto Mode (Cascading Pipeline):", tooltip)
         self.assertIn("Searches Unison first", tooltip)
         self.assertIn("stream to lrc.red", tooltip)
         self.assertIn("fall back to Kugou", tooltip)
 
+    def test_tree_column_widths_restore_and_save(self) -> None:
+        from PySide6.QtGui import QCloseEvent
+        from gui.app import MainWindow
+
+        self.win = MainWindow()
+        # Custom widths
+        custom_widths = [300, 150, 80, 100, 180]
+        self.win.config.column_widths = custom_widths
+        self.win._setup_tree()
+
+        # Check restored widths on tree
+        self.assertEqual(self.win.tree.columnWidth(0), 300)
+        self.assertEqual(self.win.tree.columnWidth(1), 150)
+        self.assertEqual(self.win.tree.columnWidth(2), 80)
+        self.assertEqual(self.win.tree.columnWidth(3), 100)
+        self.assertEqual(self.win.tree.columnWidth(4), 180)
+
+        # Simulate resize
+        self.win.tree.header().resizeSection(0, 350)
+        self.assertEqual(self.win.config.column_widths[0], 350)
+
+        # Trigger closeEvent
+        close_event = QCloseEvent()
+        self.win.closeEvent(close_event)
+        self.assertEqual(self.win.config.column_widths[0], 350)
+
 
 if __name__ == "__main__":
     unittest.main()
+

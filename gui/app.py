@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.batch_worker import BatchTaggerWorker, ScannerWorker, _extract_tag_string
-from core.config import SettingsManager
+from core.config import Config, SettingsManager, load_config, save_config
 from core.models import LyricLine, SongLyrics, SyllableSpan, SyncState, TaggingConfig, TrackItem
 from core.providers.auto import AutoLyricsProvider
 from core.providers.kugou import KugouProvider
@@ -447,25 +447,7 @@ class MainWindow(QMainWindow):
         left_layout.setContentsMargins(4, 4, 4, 4)
 
         self.tree = QTreeWidget()
-        self.tree.setColumnCount(5)
-        self.tree.setHeaderLabels(["Title", "Artist", "Duration", "Sync State", "Status"])
-        header = self.tree.header()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        header.setStretchLastSection(True)
-        self.tree.setColumnWidth(0, 220)
-        self.tree.setColumnWidth(1, 140)
-        self.tree.setColumnWidth(2, 75)
-        self.tree.setColumnWidth(3, 90)
-        self.tree.setColumnWidth(4, 160)
-
-        self.tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.tree.customContextMenuRequested.connect(self._show_context_menu)
-        self.tree.itemSelectionChanged.connect(self._on_item_selection_changed)
-        self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
-        self.tree.itemChanged.connect(self._on_tree_item_changed)
-        self.tree.setAcceptDrops(True)
+        self._setup_tree()
 
         # Compatibility wrapper for existing tests
         self.table = _TableTreeCompat(self.tree, self)
@@ -516,6 +498,37 @@ class MainWindow(QMainWindow):
 
     def _collapse_all(self) -> None:
         self.tree.collapseAll()
+
+    def _setup_tree(self) -> None:
+        self.tree.setColumnCount(5)
+        self.tree.setHeaderLabels(["Title", "Artist", "Duration", "Sync State", "Status"])
+        header = self.tree.header()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
+
+        widths = getattr(self.config, "column_widths", [220, 140, 75, 90, 160])
+        if not isinstance(widths, (list, tuple)) or len(widths) != 5:
+            widths = [220, 140, 75, 90, 160]
+
+        for col_idx, width in enumerate(widths):
+            if width > 20:
+                header.resizeSection(col_idx, width)
+
+        header.sectionResized.connect(self._on_header_section_resized)
+
+        self.tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._show_context_menu)
+        self.tree.itemSelectionChanged.connect(self._on_item_selection_changed)
+        self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self.tree.itemChanged.connect(self._on_tree_item_changed)
+        self.tree.setAcceptDrops(True)
+
+    def _on_header_section_resized(self, logical_index: int, old_size: int, new_size: int) -> None:
+        header = self.tree.header()
+        self.config.column_widths = [header.sectionSize(i) for i in range(header.count())]
+        save_config(self.config)
 
     # ── Drag and Drop Ingestion ───────────────────────────────────────────
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
@@ -1026,6 +1039,34 @@ class MainWindow(QMainWindow):
                 return
 
         super().keyPressEvent(event)
+
+    def closeEvent(self, event) -> None:
+        try:
+            if hasattr(self, "tree") and self.tree.header():
+                header = self.tree.header()
+                self.config.column_widths = [header.sectionSize(i) for i in range(header.count())]
+                save_config(self.config)
+        except Exception:
+            pass
+        if hasattr(self, "preview_widget") and self.preview_widget:
+            try:
+                if hasattr(self.preview_widget, "_player"):
+                    self.preview_widget._player.stop()
+                if hasattr(self.preview_widget, "_timer"):
+                    self.preview_widget._timer.stop()
+            except Exception:
+                pass
+        if hasattr(self, "editor_widget") and self.editor_widget:
+            try:
+                if hasattr(self.editor_widget, "_debounce_timer"):
+                    self.editor_widget._debounce_timer.stop()
+            except Exception:
+                pass
+        if self.scanner_thread and self.scanner_thread.isRunning():
+            self.scanner_thread.terminate()
+        if self.tagger_thread and self.tagger_thread.isRunning():
+            self.tagger_thread.cancel()
+        super().closeEvent(event)
 
 
 def main() -> None:
