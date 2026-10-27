@@ -234,7 +234,7 @@ class _KaraokeCanvas(QWidget):
                         self._draw_word_synced_line(painter, line, line_text, y, float(width), line_height)
                     else:
                         # ── Mode A: Line-synced → entire line in solid active colour ──
-                        self._draw_line_synced_active(painter, line_text, y, float(width), line_height)
+                        self._draw_line_synced_active(painter, line_text, y, float(width), line_height, line=line)
 
                     # Background vocal directly beneath active lead line
                     if line.has_background:
@@ -252,7 +252,7 @@ class _KaraokeCanvas(QWidget):
                             else:
                                 self._draw_line_synced_active(
                                     painter, bg_text, sub_y, float(width), 20.0,
-                                    sub_active_font, sub_highlight_pen,
+                                    sub_active_font, sub_highlight_pen, line=line,
                                 )
                     elif not line.is_background:
                         active_bg: Optional[LyricLine] = None
@@ -274,7 +274,7 @@ class _KaraokeCanvas(QWidget):
                                 else:
                                     self._draw_line_synced_active(
                                         painter, sub_text, sub_y, float(width), 20.0,
-                                        sub_active_font, sub_highlight_pen,
+                                        sub_active_font, sub_highlight_pen, line=active_bg,
                                     )
                 else:
                     painter.setFont(base_font)
@@ -282,7 +282,10 @@ class _KaraokeCanvas(QWidget):
                     painter.setPen(pen)
                     fm = QFontMetricsF(base_font)
                     text_width = fm.horizontalAdvance(line_text)
-                    x = max(10.0, (float(width) - text_width) / 2.0)
+                    if getattr(line, "singer_id", None) == "v2":
+                        x = max(10.0, float(width) - text_width - 30.0)
+                    else:
+                        x = max(10.0, (float(width) - text_width) / 2.0)
                     baseline_y = y + fm.ascent() / 2.0
                     painter.drawText(int(x), int(baseline_y), line_text)
 
@@ -296,7 +299,10 @@ class _KaraokeCanvas(QWidget):
                             painter.setPen(sub_dim_pen)
                             sub_fm = QFontMetricsF(sub_base_font)
                             sub_text_w = sub_fm.horizontalAdvance(bg_text)
-                            sub_x = max(10.0, (float(width) - sub_text_w) / 2.0)
+                            if getattr(line, "singer_id", None) == "v2":
+                                sub_x = max(10.0, float(width) - sub_text_w - 30.0)
+                            else:
+                                sub_x = max(10.0, (float(width) - sub_text_w) / 2.0)
                             sub_baseline_y = sub_y + sub_fm.ascent() / 2.0
                             painter.drawText(int(sub_x), int(sub_baseline_y), bg_text)
         finally:
@@ -312,6 +318,8 @@ class _KaraokeCanvas(QWidget):
         line_height: float,
         font: Optional[QFont] = None,
         pen: Optional[QPen] = None,
+        line: Optional[LyricLine] = None,
+        singer_id: Optional[str] = None,
     ) -> None:
         """Mode A: Line-synced — draw entire line in solid active highlight colour.
 
@@ -325,7 +333,11 @@ class _KaraokeCanvas(QWidget):
         safe_text = str(line_text or "")
         fm = QFontMetricsF(f)
         text_width = fm.horizontalAdvance(safe_text)
-        x = max(10.0, (view_width - text_width) / 2.0)
+        sid = singer_id or (getattr(line, "singer_id", None) if line else None)
+        if sid == "v2":
+            x = max(10.0, view_width - text_width - 30.0)
+        else:
+            x = max(10.0, (view_width - text_width) / 2.0)
         baseline_y = y + fm.ascent() / 2.0
         painter.drawText(int(x), int(baseline_y), safe_text)
 
@@ -360,7 +372,10 @@ class _KaraokeCanvas(QWidget):
         safe_text = str(line_text or "")
         fm = QFontMetricsF(f)
         text_width = fm.horizontalAdvance(safe_text)
-        x_start = max(10.0, (view_width - text_width) / 2.0)
+        if getattr(line, "singer_id", None) == "v2":
+            x_start = max(10.0, view_width - text_width - 30.0)
+        else:
+            x_start = max(10.0, (view_width - text_width) / 2.0)
         baseline_y = y + fm.ascent() / 2.0
 
         # 1. Draw full line in dim colour as base layer

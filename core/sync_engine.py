@@ -363,9 +363,37 @@ def to_ttml(song: SongLyrics) -> str:
         Apple Music.
     """
     lines_xml: List[str] = []
+    agents = dict(getattr(song, "agents", {}) or {})
+    if not agents and any(getattr(line, "singer_id", None) for line in song.lines):
+        seen: Dict[str, str] = {}
+        for line in song.lines:
+            sid = getattr(line, "singer_id", None)
+            if sid:
+                seen[sid] = sid
+        if "v1" not in seen and "v2" not in seen:
+            seen["v1"] = "v1"
+            seen["v2"] = "v2"
+        elif "v1" not in seen:
+            seen = {"v1": "v1", **seen}
+        elif "v2" not in seen:
+            seen["v2"] = "v2"
+        agents = seen
+
+    head_xml = ""
+    if agents:
+        agent_tags = "".join(f'<ttm:agent type="person" xml:id="{aid}"/>' for aid in agents.keys())
+        head_xml = (
+            '  <head>\n'
+            '    <metadata>\n'
+            f'      {agent_tags}\n'
+            '    </metadata>\n'
+            '  </head>\n'
+        )
+
     for line in song.lines:
         begin = _ms_to_ttml(line.start_ms)
         end = _ms_to_ttml(line.end_ms)
+        agent_attr = f' ttm:agent="{line.singer_id}"' if getattr(line, "singer_id", None) else ""
 
         spans: List[str] = []
         for span in line.syllables:
@@ -400,11 +428,11 @@ def to_ttml(song: SongLyrics) -> str:
 
         if not spans and not bg_spans:
             lines_xml.append(
-                f'      <p begin="{begin}" end="{end}"></p>'
+                f'      <p begin="{begin}" end="{end}"{agent_attr}></p>'
             )
         else:
             lines_xml.append(
-                f'      <p begin="{begin}" end="{end}">{"".join(spans)}{bg_xml}</p>'
+                f'      <p begin="{begin}" end="{end}"{agent_attr}>{"".join(spans)}{bg_xml}</p>'
             )
 
     body = "\n".join(lines_xml)
@@ -415,6 +443,7 @@ def to_ttml(song: SongLyrics) -> str:
         '    xmlns:ttm="http://www.w3.org/ns/ttml#metadata"\n'
         '    xmlns:itunes="http://music.apple.com/lyric-ttml-internal"\n'
         '    itunes:timing="Word">\n'
+        f'{head_xml}'
         '  <body>\n'
         '    <div>\n'
         f'{body}\n'

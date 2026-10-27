@@ -217,5 +217,47 @@ class TestUnisonSearchAndTTML(unittest.TestCase):
             self.assertEqual(line.background_syllables[0].text, "Haunt")
 
 
+class TestDuetParsingAndOppositeAlignment(unittest.TestCase):
+    """Test multi-singer duet parsing, serialization, and preview alignment."""
+
+    def test_duet_parsing_and_serialization(self) -> None:
+        from core.sync_engine import to_ttml
+
+        xml = """<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata">
+<head><metadata><ttm:agent type="person" xml:id="v1"/><ttm:agent type="person" xml:id="v2"/></metadata></head>
+<body><div>
+<p begin="00:00:20.090" end="00:00:23.200" ttm:agent="v1"><span>Love, </span><span>talk </span></p>
+<p begin="00:00:39.170" end="00:00:41.960" ttm:agent="v2"><span>All </span><span>the </span><span>stars </span></p>
+</div></body></tt>"""
+
+        lyrics = parse_ttml(xml)
+        self.assertEqual(lyrics.lines[0].singer_id, "v1")
+        self.assertEqual(lyrics.lines[1].singer_id, "v2")
+        self.assertIn("v1", lyrics.agents)
+        self.assertIn("v2", lyrics.agents)
+
+        out_ttml = to_ttml(lyrics)
+        self.assertIn('ttm:agent="v2"', out_ttml)
+        self.assertIn('xml:id="v2"', out_ttml)
+
+    def test_auto_populate_v1_v2_when_agents_empty(self) -> None:
+        from core.models import LyricLine, SongLyrics, Syllable
+        from core.sync_engine import to_ttml
+
+        lyrics = SongLyrics(
+            lines=[
+                LyricLine(start_ms=1000, end_ms=2000, syllables=[Syllable("Hello ", 1000, 500), Syllable("world", 1500, 500)], singer_id="v1"),
+                LyricLine(start_ms=3000, end_ms=4000, syllables=[Syllable("Hi ", 3000, 500), Syllable("there", 3500, 500)], singer_id="v2"),
+            ],
+            is_word_synced=True,
+        )
+        out = to_ttml(lyrics)
+        self.assertIn('xml:id="v1"', out)
+        self.assertIn('xml:id="v2"', out)
+        self.assertIn('ttm:agent="v1"', out)
+        self.assertIn('ttm:agent="v2"', out)
+
+
 if __name__ == "__main__":
     unittest.main()
+

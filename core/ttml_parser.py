@@ -140,6 +140,24 @@ def parse_ttml(xml_content: str) -> SongLyrics:
     root = ET.fromstring(xml_content)
     lines: List[LyricLine] = []
     metadata: Dict[str, str] = {}
+    agents: Dict[str, str] = {}
+
+    # Extract all <ttm:agent> elements across head/metadata
+    for elem in root.iter():
+        if _local_tag(elem) == "agent":
+            agent_id = None
+            for k, v in elem.attrib.items():
+                local_k = k.split("}")[-1] if "}" in k else k
+                if local_k.lower() == "id":
+                    agent_id = v.strip()
+                    break
+            if agent_id:
+                agent_name = (elem.text or "").strip() or agent_id
+                for child in elem:
+                    if _local_tag(child) == "name" and child.text and child.text.strip():
+                        agent_name = child.text.strip()
+                        break
+                agents[agent_id] = agent_name
 
     # Extract all <p> elements across body/div hierarchy
     p_elements: List[ET.Element] = [
@@ -149,6 +167,15 @@ def parse_ttml(xml_content: str) -> SongLyrics:
     for p in p_elements:
         line_start = parse_time(p.attrib.get("begin", "0"))
         line_end = parse_time(p.attrib.get("end", "0"))
+
+        singer_id: Optional[str] = None
+        for k, v in p.attrib.items():
+            local_k = k.split("}")[-1] if "}" in k else k
+            if local_k.lower() == "agent":
+                singer_id = v.strip()
+                break
+        if singer_id and singer_id not in agents:
+            agents[singer_id] = singer_id
 
         syllables: List[Syllable] = []
         bg_syllables: List[Syllable] = []
@@ -219,6 +246,7 @@ def parse_ttml(xml_content: str) -> SongLyrics:
                         syllables=syllables,
                         background_text=bg_text,
                         background_syllables=bg_syllables,
+                        singer_id=singer_id,
                     )
                 )
             elif bg_text or bg_syllables:
@@ -237,6 +265,7 @@ def parse_ttml(xml_content: str) -> SongLyrics:
                         background_text=bg_text,
                         background_syllables=bg_syllables,
                         is_background=True,
+                        singer_id=singer_id,
                     )
                 )
             else:
@@ -246,6 +275,7 @@ def parse_ttml(xml_content: str) -> SongLyrics:
                         end_ms=line_end or line_start,
                         text=(p.text or "").strip(),
                         syllables=[],
+                        singer_id=singer_id,
                     )
                 )
         else:
@@ -255,8 +285,9 @@ def parse_ttml(xml_content: str) -> SongLyrics:
                     end_ms=line_end or line_start,
                     text=(p.text or "").strip(),
                     syllables=[],
+                    singer_id=singer_id,
                 )
             )
 
     is_word_synced = bool(any(len(l.syllables) > 1 for l in lines))
-    return SongLyrics(metadata=metadata, lines=lines, is_word_synced=is_word_synced)
+    return SongLyrics(metadata=metadata, lines=lines, is_word_synced=is_word_synced, agents=agents)

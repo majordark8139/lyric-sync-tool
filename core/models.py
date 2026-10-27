@@ -79,6 +79,7 @@ class LyricLine:
     background_syllables: List[Any] = field(default_factory=list)
     background_end_ms: Optional[int] = None
     _text: Optional[str] = None
+    singer_id: Optional[str] = None
 
     def __init__(
         self,
@@ -91,6 +92,7 @@ class LyricLine:
         background_end_ms: Optional[int] = None,
         _text: Optional[str] = None,
         text: Optional[str] = None,
+        singer_id: Optional[str] = None,
     ):
         self.start_ms = start_ms
         self.syllables = list(syllables) if syllables is not None else []
@@ -99,6 +101,7 @@ class LyricLine:
         self.background_syllables = list(background_syllables) if background_syllables is not None else []
         self.background_end_ms = background_end_ms
         self._text = text if text is not None else _text
+        self.singer_id = singer_id
 
         if end_ms is not None:
             self.end_ms = end_ms
@@ -130,16 +133,19 @@ class SongLyrics:
     metadata: Dict[str, str] = field(default_factory=dict)
     lines: List[LyricLine] = field(default_factory=list)
     _is_word_synced: bool = False
+    agents: Dict[str, str] = field(default_factory=dict)
 
     def __init__(
         self,
         metadata: Optional[Dict[str, str]] = None,
         lines: Optional[List[LyricLine]] = None,
         is_word_synced: bool = False,
+        agents: Optional[Dict[str, str]] = None,
     ):
         self.metadata = metadata if metadata is not None else {}
         self.lines = list(lines) if lines is not None else []
         self._is_word_synced = is_word_synced
+        self.agents = dict(agents) if agents is not None else {}
         self.detect_sub_vocals()
 
     @property
