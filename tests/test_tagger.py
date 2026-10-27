@@ -587,6 +587,36 @@ class TestReadTrackLyrics(unittest.TestCase):
         self.assertEqual(len(lyrics.lines[0].syllables), 3)
         self.assertTrue(lyrics.is_word_synced)
 
+    def test_read_from_ttml_sidecar(self) -> None:
+        track = str(self.dir_path / "song.mp3")
+        _create_minimal_mp3(track)
+        ttml_path = self.dir_path / "song.ttml"
+        ttml_content = """<?xml version="1.0" encoding="utf-8"?>
+<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" xmlns:itunes="http://music.apple.com/lyric-ttml" itunes:timing="Word">
+  <head>
+    <metadata>
+      <ttm:title>Song</ttm:title>
+      <ttm:agent type="person" xml:id="v1"/>
+    </metadata>
+  </head>
+  <body dur="00:03:00.000">
+    <div>
+      <p begin="00:00:01.000" end="00:00:03.000" ttm:agent="v1">
+        <span begin="00:00:01.000" end="00:00:01.500">Hel</span>
+        <span begin="00:00:01.500" end="00:00:02.000">lo </span>
+        <span begin="00:00:02.000" end="00:00:03.000">World</span>
+      </p>
+    </div>
+  </body>
+</tt>"""
+        ttml_path.write_text(ttml_content, encoding="utf-8")
+
+        lyrics = read_track_lyrics(track)
+        self.assertIsNotNone(lyrics)
+        self.assertEqual(len(lyrics.lines), 1)
+        self.assertTrue(lyrics.is_word_synced)
+        self.assertEqual(len(lyrics.lines[0].syllables), 3)
+
     def test_read_from_flac_vorbis(self) -> None:
         track = str(self.dir_path / "song.flac")
         _create_minimal_flac(track)

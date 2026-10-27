@@ -28,6 +28,7 @@ from core.models import (
     TrackItem,
 )
 from core.sync_engine import to_enhanced_lrc, to_plain_text, to_ttml
+from core.ttml_parser import parse_ttml
 
 # Regex to detect word/syllable-level timing tags:
 # - Kugou KRC style: <offset,duration,flag>
@@ -711,7 +712,19 @@ def read_track_lyrics(file_path: str) -> Optional[SongLyrics]:
     """
     path = pathlib.Path(file_path)
 
-    # ── 1. Sidecar files (ELRC before LRC for word-sync priority) ─────────
+    # ── 1. Sibling sidecars (.ttml word-sync, .elrc, .lrc) ────────────────
+    ttml_path = path.with_suffix(".ttml")
+    if not ttml_path.is_file() and path.with_suffix(".TTML").is_file():
+        ttml_path = path.with_suffix(".TTML")
+    if ttml_path.is_file():
+        try:
+            raw_ttml = ttml_path.read_text(encoding="utf-8", errors="replace")
+            parsed_ttml = parse_ttml(raw_ttml)
+            if parsed_ttml and parsed_ttml.lines:
+                return parsed_ttml
+        except Exception:
+            pass
+
     for ext in (".elrc", ".lrc"):
         sidecar = path.with_suffix(ext)
         if sidecar.is_file():
