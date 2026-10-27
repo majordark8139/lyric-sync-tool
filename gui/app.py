@@ -1128,6 +1128,8 @@ class MainWindow(QMainWindow):
                 config=self.config,
                 parent=self,
                 provider=self._get_active_provider(),
+                provider_name=self.cmb_provider.currentText(),
+                album_artist=getattr(track, "album_artist", ""),
             )
             if dlg.exec() == ManualSearchDialog.DialogCode.Accepted:
                 lyrics = dlg.get_selected_lyrics()
@@ -1191,6 +1193,15 @@ class MainWindow(QMainWindow):
 
         self.btn_start_tagging.setEnabled(False)
         self.btn_cancel_tagging.setEnabled(True)
+        if hasattr(self, "btn_cleanup") and self.btn_cleanup:
+            self.btn_cleanup.setEnabled(False)
+
+        # Stop active playback and detach file handles from preview widget
+        if hasattr(self, "preview_widget") and self.preview_widget:
+            self.preview_widget.stop()
+            if hasattr(self.preview_widget, "_player"):
+                self.preview_widget._player.setSource(QUrl())
+
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, len(selected_pairs))
         self.progress_bar.setValue(0)
@@ -1214,14 +1225,23 @@ class MainWindow(QMainWindow):
                     self.editor_widget.set_lyrics(track.matched_lyrics)
 
         self.tagger_thread.track_progress.connect(_on_track_progress)
-        self.tagger_thread.overall_progress.connect(lambda done, tot: self.progress_bar.setValue(done))
+        self.tagger_thread.overall_progress.connect(self._on_overall_progress)
         self.tagger_thread.batch_finished.connect(self._on_batch_finished)
         self.tagger_thread.start()
+
+    def _on_overall_progress(self, current: int, total: int) -> None:
+        self.progress_bar.setValue(current)
+        if current > 0 and current % 200 == 0:
+            import gc
+            gc.collect()
 
     def _on_cancel_tagging_clicked(self) -> None:
         if self.tagger_thread and self.tagger_thread.isRunning():
             self.tagger_thread.cancel()
             self.btn_cancel_tagging.setEnabled(False)
+            self.btn_start_tagging.setEnabled(True)
+            if hasattr(self, "btn_cleanup") and self.btn_cleanup:
+                self.btn_cleanup.setEnabled(True)
             self.tree.setSortingEnabled(getattr(self, "_tree_was_sorting", False))
             self.statusBar().showMessage("Tagging cancelled.")
 
@@ -1229,8 +1249,12 @@ class MainWindow(QMainWindow):
         self.tree.setSortingEnabled(getattr(self, "_tree_was_sorting", False))
         self.btn_start_tagging.setEnabled(True)
         self.btn_cancel_tagging.setEnabled(False)
+        if hasattr(self, "btn_cleanup") and self.btn_cleanup:
+            self.btn_cleanup.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.statusBar().showMessage("Batch tagging complete.")
+        import gc
+        gc.collect()
         self._apply_missing_filter()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:

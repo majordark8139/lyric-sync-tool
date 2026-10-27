@@ -330,6 +330,58 @@ class TestMainWindow(unittest.TestCase):
             self.assertIsNotNone(self.window.preview_widget._lyrics)
             self.assertEqual(len(self.window.preview_widget._lyrics.lines), 1)
 
+    def test_batch_tagging_preview_and_cleanup_lockout(self) -> None:
+        from unittest.mock import MagicMock, patch
+        from PySide6.QtCore import QUrl
+        from PySide6.QtTest import QTest
+
+        # Add a track so selected_pairs is not empty
+        track = TrackItem(file_path="/dummy/test.mp3", title="Song", artist="Artist", duration_ms=1000)
+        self.window._on_track_found(track)
+        album_item = self.window.tree.topLevelItem(0)
+        album_item.child(0).setCheckState(0, Qt.CheckState.Checked)
+
+        self.window.btn_cleanup.setEnabled(True)
+
+        mock_stop = MagicMock()
+        mock_set_source = MagicMock()
+        self.window.preview_widget.stop = mock_stop
+        self.window.preview_widget._player.setSource = mock_set_source
+
+        # Trigger start tagging with mocked BatchTaggerWorker so no threads decode audio
+        with patch("gui.app.BatchTaggerWorker") as mock_worker_cls:
+            mock_worker = MagicMock()
+            mock_worker.isRunning.return_value = True
+            mock_worker_cls.return_value = mock_worker
+
+            self.window._on_start_tagging_clicked()
+
+            self.assertFalse(self.window.btn_cleanup.isEnabled())
+            mock_stop.assert_called()
+            mock_set_source.assert_called_with(QUrl())
+
+            # Cancel tagging restores cleanup button
+            self.window._on_cancel_tagging_clicked()
+            self.assertTrue(self.window.btn_cleanup.isEnabled())
+            mock_worker.cancel.assert_called_once()
+
+            # Batch finished also re-enables cleanup button
+            self.window.btn_cleanup.setEnabled(False)
+            self.window._on_batch_finished()
+            self.assertTrue(self.window.btn_cleanup.isEnabled())
+
+        QTest.qWait(50)
+
+    def test_main_thread_gc_on_progress_and_finished(self) -> None:
+        from unittest.mock import patch
+        with patch("gc.collect") as mock_gc:
+            self.window._on_overall_progress(200, 1000)
+            mock_gc.assert_called_once()
+
+        with patch("gc.collect") as mock_gc:
+            self.window._on_batch_finished()
+            mock_gc.assert_called_once()
+
 
 class TestPaintStability(unittest.TestCase):
     """30-second continuous 60 FPS animation soak test verifying refcount stability."""
@@ -647,11 +699,12 @@ class TestManualSearchDialog(unittest.TestCase):
             return None
 
         with patch("gui.manual_search_dialog._make_request", side_effect=mock_request):
-            dlg = ManualSearchDialog(title="Test Title", artist="Test Artist", duration_ms=180000)
+            dlg = ManualSearchDialog(title="Test Title", artist="Test Artist", duration_ms=180000, provider_name="Kugou")
             dlg.wait_for_search()
             self.assertEqual(dlg.table_results.rowCount(), 1)
             self.assertEqual(dlg.table_results.item(0, 0).text(), "Test Title")
-            self.assertEqual(dlg.table_results.item(0, 3).text(), "WORD")
+            self.assertEqual(dlg.table_results.item(0, 3).text(), "Kugou")
+            self.assertEqual(dlg.table_results.item(0, 4).text(), "WORD")
             self.assertIn("Found 1 result(s)", dlg.lbl_status.text())
 
             # Select and apply
@@ -681,7 +734,7 @@ class TestManualSearchDialog(unittest.TestCase):
             return {"candidates": []}
 
         with patch("gui.manual_search_dialog._make_request", side_effect=mock_request):
-            dlg = ManualSearchDialog(title="Yellow (Live)", artist="Coldplay", duration_ms=210000)
+            dlg = ManualSearchDialog(title="Yellow (Live)", artist="Coldplay", duration_ms=210000, provider_name="Kugou")
             dlg.wait_for_search()
             self.assertEqual(dlg.table_results.rowCount(), 1)
             self.assertIn("Showing results for fallback query: 'Yellow Live'", dlg.lbl_status.text())
@@ -692,7 +745,7 @@ class TestManualSearchDialog(unittest.TestCase):
         from gui.manual_search_dialog import ManualSearchDialog
 
         with patch("gui.manual_search_dialog._make_request", return_value={"candidates": []}):
-            dlg = ManualSearchDialog(title="Nonexistent Song", artist="Unknown", duration_ms=100000)
+            dlg = ManualSearchDialog(title="Nonexistent Song", artist="Unknown", duration_ms=100000, provider_name="Kugou")
             dlg.wait_for_search()
             self.assertEqual(dlg.table_results.rowCount(), 0)
             self.assertIn("No candidates found", dlg.lbl_status.text())
@@ -703,7 +756,7 @@ class TestManualSearchDialog(unittest.TestCase):
         from gui.manual_search_dialog import ManualSearchDialog
 
         with patch("gui.manual_search_dialog._make_request", return_value=None):
-            dlg = ManualSearchDialog(title="Test Song", artist="Test", duration_ms=100000)
+            dlg = ManualSearchDialog(title="Test Song", artist="Test", duration_ms=100000, provider_name="Kugou")
             dlg.wait_for_search()
             self.assertEqual(dlg.table_results.rowCount(), 0)
             self.assertIn("Connection error", dlg.lbl_status.text())
@@ -732,11 +785,108 @@ class TestManualSearchDialog(unittest.TestCase):
             return None
 
         with patch("gui.manual_search_dialog._make_request", side_effect=mock_request):
-            dlg = ManualSearchDialog(title="Test Title", artist="Test Artist", duration_ms=180000)
+            dlg = ManualSearchDialog(title="Test Title", artist="Test Artist", duration_ms=180000, provider_name="Kugou")
             dlg.wait_for_search()
             # Double click cell (0, 0)
             dlg._on_cell_double_clicked(0, 0)
             self.assertIsNotNone(dlg.get_selected_lyrics())
+            dlg.deleteLater()
+
+    def test_provider_combo_initialization(self) -> None:
+        from gui.manual_search_dialog import ManualSearchDialog
+        dlg = ManualSearchDialog(provider_name="Unison")
+        self.assertEqual(dlg.provider_combo.count(), 4)
+        items = [dlg.provider_combo.itemText(i) for i in range(4)]
+        self.assertEqual(items, ["Auto", "Unison", "lrc.red", "Kugou"])
+        self.assertEqual(dlg.provider_combo.currentText(), "Unison")
+        dlg.deleteLater()
+
+    def test_manual_search_with_unison_provider(self) -> None:
+        from unittest.mock import patch, MagicMock
+        from gui.manual_search_dialog import ManualSearchDialog
+
+        mock_search_resp = MagicMock()
+        mock_search_resp.status_code = 200
+        mock_search_resp.json.return_value = {
+            "data": [
+                {
+                    "id": "unison-123",
+                    "title": "Unison Track",
+                    "artist": "Unison Artist",
+                    "duration": 200,
+                    "syncType": "richsync",
+                }
+            ]
+        }
+
+        mock_lyrics_resp = MagicMock()
+        mock_lyrics_resp.status_code = 200
+        mock_lyrics_resp.json.return_value = {
+            "data": {
+                "lyrics": """<?xml version="1.0" encoding="utf-8"?>
+<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata">
+  <body>
+    <div>
+      <p begin="00:01.000" end="00:03.000">
+        <span begin="00:01.000" end="00:02.000">Hel</span>
+        <span begin="00:02.000" end="00:03.000">lo</span>
+      </p>
+    </div>
+  </body>
+</tt>""",
+                "format": "ttml",
+            }
+        }
+
+        def fake_unison_get(url, *args, **kwargs):
+            if "/lyrics/unison-123" in url:
+                return mock_lyrics_resp
+            return mock_search_resp
+
+        with patch("gui.manual_search_dialog._unison_http_get", side_effect=fake_unison_get):
+            dlg = ManualSearchDialog(title="Unison Track", artist="Unison Artist", duration_ms=200000, provider_name="Unison")
+            dlg.wait_for_search()
+            self.assertEqual(dlg.table_results.rowCount(), 1)
+            self.assertEqual(dlg.table_results.item(0, 0).text(), "Unison Track")
+            self.assertEqual(dlg.table_results.item(0, 3).text(), "Unison")
+            self.assertEqual(dlg.table_results.item(0, 4).text(), "WORD")
+
+            dlg.table_results.selectRow(0)
+            dlg._on_apply_clicked()
+            lyrics = dlg.get_selected_lyrics()
+            self.assertIsNotNone(lyrics)
+            self.assertTrue(lyrics.is_word_synced)
+            dlg.deleteLater()
+
+    def test_manual_search_with_lrc_red_provider(self) -> None:
+        from unittest.mock import patch, MagicMock
+        from gui.manual_search_dialog import ManualSearchDialog
+
+        mock_search_resp = MagicMock()
+        mock_search_resp.status_code = 200
+        mock_search_resp.json.return_value = [
+            {
+                "id": 999,
+                "title": "Red Track",
+                "artist": "Red Artist",
+                "duration": 150,
+                "syncedLyrics": "[00:01.00]<00:01.00>Red <00:01.50>Song",
+            }
+        ]
+
+        with patch("gui.manual_search_dialog._lrc_red_http_get", return_value=mock_search_resp):
+            dlg = ManualSearchDialog(title="Red Track", artist="Red Artist", duration_ms=150000, provider_name="lrc.red")
+            dlg.wait_for_search()
+            self.assertEqual(dlg.table_results.rowCount(), 1)
+            self.assertEqual(dlg.table_results.item(0, 0).text(), "Red Track")
+            self.assertEqual(dlg.table_results.item(0, 3).text(), "lrc.red")
+            self.assertEqual(dlg.table_results.item(0, 4).text(), "WORD")
+
+            dlg.table_results.selectRow(0)
+            dlg._on_apply_clicked()
+            lyrics = dlg.get_selected_lyrics()
+            self.assertIsNotNone(lyrics)
+            self.assertTrue(lyrics.is_word_synced)
             dlg.deleteLater()
 
 

@@ -1,6 +1,5 @@
 """Background worker threads for directory scanning and batch tagging."""
 
-import gc
 import os
 import pathlib
 import queue
@@ -104,10 +103,7 @@ class ScannerWorker(QThread):
 
                 count += 1
                 self.track_found.emit(item)
-                if count % 50 == 0:
-                    gc.collect()
 
-        gc.collect()
         self.finished_scanning.emit(count)
 
 
@@ -263,9 +259,6 @@ class BatchTaggerWorker(QThread):
                     done_count += 1
                     curr_done = done_count
                     self.overall_progress.emit(curr_done, total)
-                    # Low RAM safety: Periodic garbage collection every 50 tracks
-                    if curr_done % 50 == 0:
-                        gc.collect()
 
                 task_queue.task_done()
                 time.sleep(0.02)
@@ -276,5 +269,4 @@ class BatchTaggerWorker(QThread):
         for t in threads:
             t.join()
 
-        gc.collect()
         self.batch_finished.emit()
