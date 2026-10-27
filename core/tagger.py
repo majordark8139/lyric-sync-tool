@@ -903,25 +903,44 @@ def apply_lyrics(
 
 
 
-def strip_lyrics(file_path: str) -> None:
-    """Permanently strip lyrics from an audio file across all metadata tags and sibling sidecars.
+def strip_lyrics(
+    file_path: str,
+    delete_embedded: bool = True,
+    delete_lrc: bool = True,
+    delete_elrc: bool = True,
+    delete_ttml: bool = True,
+) -> None:
+    """Permanently strip lyrics from an audio file across selected metadata tags and sibling sidecars.
 
     Args:
         file_path: Path to the target audio file.
+        delete_embedded: If True, strip embedded lyric tags from audio file.
+        delete_lrc: If True, remove sibling .lrc file.
+        delete_elrc: If True, remove sibling .elrc file.
+        delete_ttml: If True, remove sibling .ttml file.
     """
     with DISK_IO_LOCK:
         path = pathlib.Path(file_path)
 
         # ── 1. Remove sidecars ─────────────────────────────────────────────────
-        for ext in (".lrc", ".elrc", ".ttml"):
-            sidecar = path.with_suffix(ext)
-            if sidecar.is_file():
-                try:
-                    os.unlink(str(sidecar))
-                except OSError:
-                    pass
+        sidecar_configs = [
+            (".lrc", delete_lrc),
+            (".elrc", delete_elrc),
+            (".ttml", delete_ttml),
+        ]
+        for ext, should_delete in sidecar_configs:
+            if should_delete:
+                sidecar = path.with_suffix(ext)
+                if sidecar.is_file():
+                    try:
+                        os.unlink(str(sidecar))
+                    except OSError:
+                        pass
 
         # ── 2. Remove embedded tags ───────────────────────────────────────────
+        if not delete_embedded:
+            return
+
         if not path.is_file():
             return
 

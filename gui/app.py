@@ -19,8 +19,11 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
+    QHBoxLayout,
     QHeaderView,
+    QLabel,
     QLineEdit,
     QMainWindow,
     QMenu,
@@ -188,7 +191,116 @@ class _TableTreeCompat:
                     target_col = max(0, col - 1) if col > 0 else 0
                     return _TreeItemCompatWrapper(child, target_col)
                 curr += 1
-        return None
+
+class DeleteLyricsDialog(QDialog):
+    """Granular multi-format lyrics deletion dialog."""
+
+    def __init__(self, parent: Optional[QWidget] = None, track_count: int = 1) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Delete Lyrics")
+        self.setModal(True)
+        self.setMinimumWidth(380)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+        layout.setContentsMargins(18, 18, 18, 18)
+
+        # Warning / prompt text
+        lbl_warning = QLabel("Select the lyric formats you wish to remove from the selected track(s):")
+        lbl_warning.setWordWrap(True)
+        lbl_warning.setStyleSheet("font-weight: 500; font-size: 13px; line-height: 1.4;")
+        layout.addWidget(lbl_warning)
+
+        # Four distinct checkboxes, all checked by default
+        cb_layout = QVBoxLayout()
+        cb_layout.setSpacing(10)
+        cb_layout.setContentsMargins(8, 4, 8, 4)
+
+        self.cb_embedded = QCheckBox("Embedded tags (FLAC Vorbis / ID3 / MP4)")
+        self.cb_embedded.setChecked(True)
+        cb_layout.addWidget(self.cb_embedded)
+
+        self.cb_lrc = QCheckBox("Standard LRC (.lrc)")
+        self.cb_lrc.setChecked(True)
+        cb_layout.addWidget(self.cb_lrc)
+
+        self.cb_elrc = QCheckBox("Enhanced LRC (.elrc)")
+        self.cb_elrc.setChecked(True)
+        cb_layout.addWidget(self.cb_elrc)
+
+        self.cb_ttml = QCheckBox("Apple TTML (.ttml)")
+        self.cb_ttml.setChecked(True)
+        cb_layout.addWidget(self.cb_ttml)
+
+        layout.addLayout(cb_layout)
+
+        # Action Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(self.btn_cancel)
+
+        self.btn_delete = QPushButton("Delete Selected")
+        self.btn_delete.setStyleSheet("""
+            QPushButton {
+                background-color: #dc2626;
+                color: #ffffff;
+                font-weight: bold;
+                padding: 6px 16px;
+                border-radius: 4px;
+                border: 1px solid #b91c1c;
+            }
+            QPushButton:hover {
+                background-color: #ef4444;
+            }
+            QPushButton:pressed {
+                background-color: #991b1b;
+            }
+            QPushButton:disabled {
+                background-color: #4b5563;
+                border-color: #374151;
+                color: #9ca3af;
+            }
+        """)
+        self.btn_delete.clicked.connect(self.accept)
+        btn_layout.addWidget(self.btn_delete)
+
+        layout.addLayout(btn_layout)
+
+        # Connect toggles to enable/disable "Delete Selected"
+        self.cb_embedded.toggled.connect(self._update_btn_state)
+        self.cb_lrc.toggled.connect(self._update_btn_state)
+        self.cb_elrc.toggled.connect(self._update_btn_state)
+        self.cb_ttml.toggled.connect(self._update_btn_state)
+
+        self._update_btn_state()
+
+    def _update_btn_state(self) -> None:
+        has_any = any([
+            self.cb_embedded.isChecked(),
+            self.cb_lrc.isChecked(),
+            self.cb_elrc.isChecked(),
+            self.cb_ttml.isChecked(),
+        ])
+        self.btn_delete.setEnabled(has_any)
+
+    @property
+    def delete_embedded(self) -> bool:
+        return self.cb_embedded.isChecked()
+
+    @property
+    def delete_lrc(self) -> bool:
+        return self.cb_lrc.isChecked()
+
+    @property
+    def delete_elrc(self) -> bool:
+        return self.cb_elrc.isChecked()
+
+    @property
+    def delete_ttml(self) -> bool:
+        return self.cb_ttml.isChecked()
 
 
 class MainWindow(QMainWindow):
@@ -717,31 +829,41 @@ class MainWindow(QMainWindow):
 
         if action == action_strip:
             count = len(selected_items)
-            reply = QMessageBox.warning(
-                self,
-                "Confirm Lyrics Deletion",
-                f"Caution: This will permanently strip lyrics from the selected {count} file(s) "
-                "across all formats (embedded Vorbis/ID3/MP4 tags, plus sibling .lrc, .elrc, and .ttml files).\n\n"
-                "Are you sure you want to proceed?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
+            dlg = DeleteLyricsDialog(parent=self, track_count=count)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                del_emb = dlg.delete_embedded
+                del_lrc = dlg.delete_lrc
+                del_elrc = dlg.delete_elrc
+                del_ttml = dlg.delete_ttml
 
-            if reply == QMessageBox.StandardButton.Yes:
                 for item in selected_items:
                     track: TrackItem = item.data(0, Qt.ItemDataRole.UserRole)
-                    strip_lyrics(track.file_path)
-                    track.sync_state = SyncState.NONE
-                    track.matched_lyrics = None
-                    item.setText(3, SyncState.NONE.name)
-                    item.setText(4, "Lyrics Deleted")
+                    strip_lyrics(
+                        track.file_path,
+                        delete_embedded=del_emb,
+                        delete_lrc=del_lrc,
+                        delete_elrc=del_elrc,
+                        delete_ttml=del_ttml,
+                    )
+                    track.sync_state = detect_sync_state(track.file_path)
+                    if track.sync_state == SyncState.NONE:
+                        track.matched_lyrics = None
+                        item.setText(3, SyncState.NONE.name)
+                        item.setText(4, "Lyrics Deleted")
+                    else:
+                        track.matched_lyrics = read_track_lyrics(track.file_path)
+                        item.setText(3, track.sync_state.name)
+                        item.setText(4, "Ready")
                     self._apply_item_styling(item, track)
 
                 if self._current_active_item in selected_items:
-                    self.preview_widget.set_lyrics(None)
-                    self.editor_widget.set_lyrics(None)
+                    act_track: Optional[TrackItem] = self._current_active_item.data(0, Qt.ItemDataRole.UserRole)
+                    lyrics = act_track.matched_lyrics if act_track else None
+                    dur = act_track.duration_ms if act_track else 0
+                    self.preview_widget.set_lyrics(lyrics, dur)
+                    self.editor_widget.set_lyrics(lyrics)
 
-                self.statusBar().showMessage(f"Stripped lyrics from {count} file(s).")
+                self.statusBar().showMessage(f"Stripped selected lyrics from {count} file(s).")
                 self._apply_missing_filter()
 
         elif action == action_manual:

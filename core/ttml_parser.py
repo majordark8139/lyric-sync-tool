@@ -56,9 +56,39 @@ def _is_bg_role(elem: ET.Element) -> bool:
     """Return True if element role attribute designates background vocals ('x-bg')."""
     for k, v in elem.attrib.items():
         local_name = k.split("}")[-1] if "}" in k else k
-        if local_name.lower() == "role" and v.strip().lower() == "x-bg":
-            return True
+        if local_name.lower() == "role":
+            v_clean = v.strip().lower()
+            if "x-bg" in v_clean or v_clean == "background":
+                return True
     return False
+
+
+def _extract_parenthetical_bg(
+    syllables: List[Syllable],
+) -> tuple[List[Syllable], List[Syllable]]:
+    """Extract parenthesized syllables into background syllables."""
+    if not syllables:
+        return syllables, []
+
+    lead: List[Syllable] = []
+    bg: List[Syllable] = []
+    in_bg = False
+
+    for s in syllables:
+        txt = s.text.strip()
+        if not in_bg and txt.startswith(("（", "(")):
+            in_bg = True
+        if in_bg:
+            bg.append(s)
+            if txt.endswith(("）", ")")):
+                in_bg = False
+        else:
+            lead.append(s)
+
+    if in_bg or not bg or not lead:
+        return syllables, []
+
+    return lead, bg
 
 
 def _format_span_text(
@@ -127,8 +157,13 @@ def parse_ttml(xml_content: str) -> SongLyrics:
         child_spans = [child for child in p if _local_tag(child) == "span"]
 
         if child_spans:
-            lead_spans = [child for child in child_spans if not _is_bg_role(child)]
-            bg_spans = [child for child in child_spans if _is_bg_role(child)]
+            p_is_bg = _is_bg_role(p)
+            if p_is_bg:
+                lead_spans = []
+                bg_spans = list(child_spans)
+            else:
+                lead_spans = [child for child in child_spans if not _is_bg_role(child)]
+                bg_spans = [child for child in child_spans if _is_bg_role(child)]
 
             for i, child in enumerate(lead_spans):
                 formatted_text = _format_span_text(lead_spans, i)
@@ -155,13 +190,20 @@ def parse_ttml(xml_content: str) -> SongLyrics:
                     txt = (bg_child.text or "").strip()
                     if txt:
                         bg_text_parts.append(txt)
-                    if "begin" in bg_child.attrib:
-                        s_start = parse_time(bg_child.attrib.get("begin"))
-                        s_end = parse_time(bg_child.attrib.get("end", str(s_start)))
-                        s_dur = max(0, s_end - s_start)
-                        bg_syllables.append(
-                            Syllable(text=txt, start_ms=s_start, duration_ms=s_dur)
-                        )
+                    s_start = parse_time(bg_child.attrib.get("begin", str(line_start)))
+                    s_end = parse_time(bg_child.attrib.get("end", str(s_start)))
+                    s_dur = max(0, s_end - s_start)
+                    bg_syllables.append(
+                        Syllable(text=txt, start_ms=s_start, duration_ms=s_dur)
+                    )
+
+            # Check if parenthetical background ad-libs exist in lead syllables
+            if syllables and not bg_syllables:
+                clean_lead, paren_bg = _extract_parenthetical_bg(syllables)
+                if paren_bg:
+                    syllables = clean_lead
+                    bg_syllables = paren_bg
+                    bg_text_parts = [s.text for s in paren_bg]
 
             bg_text = "".join(bg_text_parts).strip() if bg_text_parts else None
 

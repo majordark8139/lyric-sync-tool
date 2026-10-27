@@ -102,26 +102,39 @@ class UnisonProvider(BaseLyricsProvider):
         if "duration_ms" in kwargs and not duration_ms:
             duration_ms = kwargs["duration_ms"]
 
-        if not title:
+        clean_title = title.strip()
+        clean_artist = artist.strip()
+
+        if not clean_title:
             return None
 
-        primary_artist = extract_primary_artist(artist)
-        query = f"{primary_artist} {title}".strip() if primary_artist else title.strip()
+        # Build query ladder: primary is f"{clean_artist} {clean_title}", fallback is clean_title
+        queries = []
+        if clean_artist and f"{clean_artist} {clean_title}" != clean_title:
+            queries.append(f"{clean_artist} {clean_title}")
+        queries.append(clean_title)
 
-        try:
-            params = {"q": query, "limit": "20"}
-            resp = _http_get(_UNISON_SEARCH_URL, params=params, timeout=5.0)
-            if resp.status_code == 200:
+        for query in queries:
+            try:
+                params = {"q": query, "limit": "20"}
+                resp = _http_get(_UNISON_SEARCH_URL, params=params, timeout=5.0)
+                if resp.status_code != 200:
+                    continue
+
                 data = resp.json()
 
                 # If response directly carries lyrics (e.g. mocked or direct payload)
                 if isinstance(data, dict):
                     if "lyrics" in data or "syncedLyrics" in data:
-                        return _process_lyrics_data(data)
+                        direct = _process_lyrics_data(data)
+                        if direct is not None:
+                            return direct
 
                     data_obj = data.get("data")
                     if isinstance(data_obj, dict) and ("lyrics" in data_obj or "syncedLyrics" in data_obj):
-                        return _process_lyrics_data(data_obj)
+                        direct = _process_lyrics_data(data_obj)
+                        if direct is not None:
+                            return direct
 
                     hits = data_obj if isinstance(data_obj, list) else data.get("results", [])
                 elif isinstance(data, list):
@@ -129,8 +142,7 @@ class UnisonProvider(BaseLyricsProvider):
                 else:
                     hits = []
 
-                best_hit = None
-                best_score = -1.0
+                candidate_matches = []
 
                 for hit in hits:
                     if not isinstance(hit, dict):
@@ -142,9 +154,10 @@ class UnisonProvider(BaseLyricsProvider):
                     if not hit_id:
                         continue
 
-                    # If syncType is present in search hit and is explicitly NOT richsync, skip it
+                    # Search Hit Filter: Do NOT discard search results just because
+                    # hit.get("syncType") is missing from the search list.
                     hit_sync_type = str(hit.get("syncType", "")).strip().lower()
-                    if hit_sync_type and hit_sync_type != "richsync":
+                    if hit_sync_type and hit_sync_type in ("plain", "linesync"):
                         continue
 
                     hit_song = (
@@ -165,16 +178,16 @@ class UnisonProvider(BaseLyricsProvider):
 
                     # Score candidate in both (artist, title) and (title, artist) order
                     score_forward = score_candidate(
-                        audio_artist=artist,
-                        audio_title=title,
+                        audio_artist=clean_artist,
+                        audio_title=clean_title,
                         audio_duration_ms=duration_ms,
                         cand_artist=hit_artist,
                         cand_title=hit_song,
                         cand_duration_ms=hit_dur_ms,
                     )
                     score_reversed = score_candidate(
-                        audio_artist=title,
-                        audio_title=artist,
+                        audio_artist=clean_title,
+                        audio_title=clean_artist,
                         audio_duration_ms=duration_ms,
                         cand_artist=hit_artist,
                         cand_title=hit_song,
@@ -187,15 +200,14 @@ class UnisonProvider(BaseLyricsProvider):
 
                     # Tiebreaker for richsync
                     effective_score = score + (0.5 if hit_sync_type == "richsync" else 0.0)
+                    candidate_matches.append((effective_score, hit))
 
-                    if effective_score > best_score:
-                        best_score = effective_score
-                        best_hit = hit
+                if not candidate_matches:
+                    continue
 
-                if hits and not best_hit:
-                    return None
+                candidate_matches.sort(key=lambda x: x[0], reverse=True)
 
-                if best_hit:
+                for _, best_hit in candidate_matches:
                     entry_url = f"{_UNISON_BASE_URL}/lyrics/{best_hit['id']}"
                     entry_resp = _http_get(entry_url, timeout=5.0)
                     if entry_resp.status_code == 200:
@@ -206,8 +218,14 @@ class UnisonProvider(BaseLyricsProvider):
                             else entry_data
                         )
                         if isinstance(inner, dict):
-                            return _process_lyrics_data(inner)
-        except Exception:
-            pass
+                            result = _process_lyrics_data(inner)
+                            if result is not None:
+                                return result
+
+                # Candidates were found and verified not to have richsync
+                return None
+
+            except Exception:
+                continue
 
         return None
