@@ -86,6 +86,25 @@ BRUSH_WORD_SYNC = QBrush(QColor(0, 200, 100))
 BRUSH_LINE_SYNC = QBrush(QColor(230, 180, 0))
 BRUSH_NO_SYNC = QBrush(QColor(160, 160, 160))
 
+import ctypes
+
+# Compensate PySide6/Shiboken refcount leak on void QTreeWidgetItem setters
+_pythonapi = ctypes.pythonapi
+_pythonapi.Py_IncRef.argtypes = [ctypes.py_object]
+_pythonapi.Py_IncRef.restype = None
+
+_orig_set_foreground = QTreeWidgetItem.setForeground
+def _safe_set_foreground(self, col: int, brush):
+    _orig_set_foreground(self, col, brush)
+    _pythonapi.Py_IncRef(None)
+QTreeWidgetItem.setForeground = _safe_set_foreground
+
+_orig_set_check_state = QTreeWidgetItem.setCheckState
+def _safe_set_check_state(self, col: int, state):
+    _orig_set_check_state(self, col, state)
+    _pythonapi.Py_IncRef(None)
+QTreeWidgetItem.setCheckState = _safe_set_check_state
+
 
 def _parse_lrc_content(text: str) -> Optional[SongLyrics]:
     """Parse standard or enhanced LRC content into SongLyrics."""
