@@ -1268,9 +1268,6 @@ class MainWindow(QMainWindow):
 
     def _on_overall_progress(self, current: int, total: int) -> None:
         self.progress_bar.setValue(current)
-        if current > 0 and current % 200 == 0:
-            import gc
-            gc.collect()
 
     def _on_cancel_tagging_clicked(self) -> None:
         if self.tagger_thread and self.tagger_thread.isRunning():
