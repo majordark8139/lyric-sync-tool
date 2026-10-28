@@ -15,7 +15,7 @@ from core.providers.base import BaseLyricsProvider
 from core.tagger import _parse_lrc_text
 from core.ttml_parser import parse_ttml
 
-_BASE_URL = "https://api.lrc.red"
+_BASE_URL = "https://lrc.red"
 _GET_URL = f"{_BASE_URL}/api/get"
 _SEARCH_URL = f"{_BASE_URL}/api/search"
 
