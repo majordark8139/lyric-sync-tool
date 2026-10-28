@@ -15,6 +15,7 @@ import mutagen
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import (
     QAction,
+    QBrush,
     QColor,
     QCursor,
     QDragEnterEvent,
@@ -78,6 +79,12 @@ from gui.settings_dialog import TaggingSettingsDialog
 from gui.themes import THEMES
 
 _AUDIO_EXTS = {".mp3", ".flac", ".m4a", ".ogg"}
+
+BRUSH_DIMMED = QBrush(QColor(100, 100, 100))
+BRUSH_NORMAL = QBrush(QColor(220, 220, 220))
+BRUSH_WORD_SYNC = QBrush(QColor(0, 200, 100))
+BRUSH_LINE_SYNC = QBrush(QColor(230, 180, 0))
+BRUSH_NO_SYNC = QBrush(QColor(160, 160, 160))
 
 
 def _parse_lrc_content(text: str) -> Optional[SongLyrics]:
@@ -176,6 +183,8 @@ class _TreeItemCompatWrapper:
         self._item.setCheckState(0, state)
 
     def setForeground(self, brush: Any) -> None:
+        if isinstance(brush, QColor):
+            brush = QBrush(brush)
         self._item.setForeground(self._col, brush)
 
 
@@ -848,6 +857,7 @@ class MainWindow(QMainWindow):
             mode = self.selection_combo.currentText()
 
         self.tree.blockSignals(True)
+        self.tree.setUpdatesEnabled(False)
         try:
             for i in range(self.tree.topLevelItemCount()):
                 album_item = self.tree.topLevelItem(i)
@@ -893,20 +903,23 @@ class MainWindow(QMainWindow):
                     else:
                         album_item.setCheckState(0, Qt.CheckState.PartiallyChecked)
         finally:
+            self.tree.setUpdatesEnabled(True)
             self.tree.blockSignals(False)
 
     def _dim_item(self, item: QTreeWidgetItem, dimmed: bool) -> None:
-        brush = QColor(100, 100, 100) if dimmed else QColor(220, 220, 220)
+        brush = BRUSH_DIMMED if dimmed else BRUSH_NORMAL
         for col in range(5):
             item.setForeground(col, brush)
 
     def _apply_item_styling(self, item: QTreeWidgetItem, track: TrackItem) -> None:
-        if track.sync_state == SyncState.WORD:
-            item.setForeground(3, QColor(0, 200, 100))
-        elif track.sync_state == SyncState.LINE:
-            item.setForeground(3, QColor(230, 180, 0))
+        sync = track.sync_state
+        if sync == SyncState.WORD or sync == "WORD" or getattr(sync, "name", "") == "WORD":
+            brush = BRUSH_WORD_SYNC
+        elif sync == SyncState.LINE or sync == "LINE" or getattr(sync, "name", "") == "LINE":
+            brush = BRUSH_LINE_SYNC
         else:
-            item.setForeground(3, QColor(160, 160, 160))
+            brush = BRUSH_NO_SYNC
+        item.setForeground(3, brush)
 
     def _get_all_track_children(self) -> List[QTreeWidgetItem]:
         """Return all leaf track items across all albums in display order."""
