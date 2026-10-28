@@ -792,7 +792,9 @@ class MainWindow(QMainWindow):
         self._apply_missing_filter()
 
     def _on_tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
-        if self._blocking_checks or column != 0:
+        if self.tree.signalsBlocked() or getattr(self, "_blocking_checks", False):
+            return
+        if column != 0:
             return
 
         self._blocking_checks = True
@@ -840,10 +842,12 @@ class MainWindow(QMainWindow):
     def _apply_selection_filter(self, mode: Optional[Union[str, int]] = None) -> None:
         if not hasattr(self, "selection_combo"):
             return
+        if self.tree.topLevelItemCount() == 0:
+            return
         if not isinstance(mode, str):
             mode = self.selection_combo.currentText()
 
-        self._blocking_checks = True
+        self.tree.blockSignals(True)
         try:
             for i in range(self.tree.topLevelItemCount()):
                 album_item = self.tree.topLevelItem(i)
@@ -889,7 +893,7 @@ class MainWindow(QMainWindow):
                     else:
                         album_item.setCheckState(0, Qt.CheckState.PartiallyChecked)
         finally:
-            self._blocking_checks = False
+            self.tree.blockSignals(False)
 
     def _dim_item(self, item: QTreeWidgetItem, dimmed: bool) -> None:
         brush = QColor(100, 100, 100) if dimmed else QColor(220, 220, 220)
@@ -1174,7 +1178,8 @@ class MainWindow(QMainWindow):
         self.config = new_config
         self.settings_manager.save_settings(new_config)
         self.statusBar().showMessage("Settings saved.")
-        self._apply_missing_filter()
+        if self.tree.topLevelItemCount() > 0:
+            self._apply_selection_filter()
 
     def _on_start_tagging_clicked(self) -> None:
         selected_pairs: List[Tuple[QTreeWidgetItem, TrackItem]] = []
