@@ -6,8 +6,13 @@ VENV_PYTHON="${SCRIPT_DIR}/.venv/bin/python"
 
 if [ ! -f "${VENV_PYTHON}" ]; then
     echo "Virtual environment not found at ${SCRIPT_DIR}/.venv"
-    echo "Please run ./install.sh first."
-    exit 1
+    if [ -f "${SCRIPT_DIR}/install.sh" ]; then
+        echo "Auto-running install.sh to set up dependencies..."
+        bash "${SCRIPT_DIR}/install.sh"
+    else
+        echo "Please run ./install.sh first."
+        exit 1
+    fi
 fi
 
 # Export LD_LIBRARY_PATH with local bundling and venv support

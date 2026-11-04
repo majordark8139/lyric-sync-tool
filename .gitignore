@@ -1,9 +1,74 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging / temporary build files
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
 .venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Backup and temporary files
+*.bak
+*.backup
+*~
+*.swp
+*.swo
+
+# Testing & coverage
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Audio and lyrics test / sidecar files
 *.flac
 *.mp3
+*.m4a
+*.ogg
+*.wav
 *.lrc
+*.elrc
 *.ttml
-build/
-dist/
+
+# Keep bundled libraries if tracked
+!lib/libxcb-cursor.so*
+
+# IDE / Editor configuration
+.idea/
+.vscode/
+*.sublime-workspace
+*.sublime-project
+.DS_Store
+Thumbs.db

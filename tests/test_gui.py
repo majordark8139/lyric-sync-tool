@@ -376,7 +376,7 @@ class TestMainWindow(unittest.TestCase):
         from unittest.mock import patch
         with patch("gc.collect") as mock_gc:
             self.window._on_overall_progress(200, 1000)
-            mock_gc.assert_called_once()
+            mock_gc.assert_not_called()
 
         with patch("gc.collect") as mock_gc:
             self.window._on_batch_finished()
