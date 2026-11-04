@@ -126,6 +126,17 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -v
 
 ---
 
+## Acknowledgements
+
+Special thanks to **Gemini** and **Claude** for:
+- Core architectural design and multi-provider synchronization pipelines.
+- Low-level CPython and Shiboken reference count underflow diagnostics and remediation.
+- glibc memory safety and thread garbage-collection stability patches.
+- Comprehensive test suite automation and validation across providers and UI layers.
+
+---
+
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
